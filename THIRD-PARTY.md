@@ -10,16 +10,16 @@ Notable direct dependencies:
 | Package | Licence |
 | --- | --- |
 | @jellyfin/sdk | MPL-2.0 |
-| @modelcontextprotocol/sdk | MIT |
 | @streamparser/json | MIT |
 | axios | MIT |
 | better-sqlite3 | MIT |
 | iptv-playlist-parser | MIT |
+| ipaddr.js | MIT |
 | lucide | ISC |
 | pm2 | AGPL-3.0 |
 | sax | BlueOak-1.0.0 |
 | stremio-addon-sdk | MIT |
-| zod | MIT |
+| undici | MIT |
 
 PM2 is the separate, unmodified production process manager. The official Jellyfin
 SDK is consumed as an external package. Distributors must preserve applicable

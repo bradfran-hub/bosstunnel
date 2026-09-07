@@ -1,9 +1,9 @@
 "use strict";
 function reviewPage(graph, after = 0) {
   if (!Number.isSafeInteger(after) || after < 0) throw Object.assign(new Error("Invalid review cursor"), { status: 400 });
-  const rows = graph.sql("SELECT * FROM IdentityReviews WHERE id>? ORDER BY id LIMIT 100").all(after);
+  const rows = graph.sql("SELECT * FROM IdentityReviews WHERE id>? AND NOT EXISTS(SELECT 1 FROM CustomerSources o WHERE o.source_id=IdentityReviews.source_id) ORDER BY id LIMIT 100").all(after);
   return { reviews: rows.map(row => {
-    const input = graph.secrets.open(row.encrypted_input);
+    const input = graph.sourceOpen(row.source_id, "quarantine", [row.catalog_key, row.source_type, row.source_key], row.encrypted_input);
     const identities = Object.fromEntries(Object.entries(input.externalIDs || {}).filter(([namespace, value]) => ["imdb", "tmdb", "tvdb"].includes(namespace) && value != null && value !== ""));
     const matches = new Map();
     const addMatch = (hit, namespace) => {

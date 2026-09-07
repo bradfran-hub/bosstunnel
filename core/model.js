@@ -32,6 +32,8 @@ function normalizeMedia(raw) {
  * Source adapters produce normalized metadata only. Discovery must never call resolve().
  * catalog({key,cursor,limit,signal}) -> {items: MediaInput[], nextCursor: string|null}
  * metadata(mapping, context) -> MediaInput with optional children: MediaInput[]
+ * Episodes may use seriesRef: {sourceType,sourceKey} for an earlier parent from
+ * the same source. episodesInCatalog skips separate metadata-based episode indexing.
  * resolve(media, mapping|null, context) -> StreamCandidate[]
  * search, subtitles, epg and catchup are optional and governed by capabilities.
  * StreamCandidate carries sourceId, resource, protocol, quality, resolution, codec,

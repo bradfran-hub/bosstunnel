@@ -1,6 +1,6 @@
 "use strict";
 const { categoryNumber, primaryCategory, categoryPage } = require("./categories");
-const { capabilityDescriptor, capabilityQuery } = require("../core/player-capabilities");
+const { capabilityDescriptor } = require("../core/player-capabilities");
 function archiveContext(params) {
   const start = Number(params.get("start")), end = Number(params.get("end"));
   if (!params.has("start") || !params.has("end") || !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end <= start || end > Date.now() + 60000 || end - start > 86400000) throw Object.assign(new Error("Invalid archive interval"), { status: 400 });
@@ -25,6 +25,7 @@ function createBossOutput(library, root) {
       pagination: { mode: "cursor", parameter: "after", maximumPageSize: 200 },
       playbackCapabilities: capabilityDescriptor(),
       playbackDelivery: { mode: "direct", proxiesMedia: false, rewritesHls: false, requiredHeaders: true },
+      playbackNegotiation: { parameter: "boss_protocols", protocols: ["http", "hls", "dash"], defaults: ["http", "hls"] },
       security: { access: "private-link", torrents: false }
     }),
     categories(params) { return categoryPage(library, params); },
@@ -45,19 +46,14 @@ function createBossOutput(library, root) {
     async playback(id, params = new URLSearchParams()) {
       const media = library.media(id);
       if (!["movie", "episode", "channel", "event"].includes(media.type)) return { id: media.canonicalId, resources: [] };
-      const url = new URL(library.links.play(media));
-      for (const [key, value] of Object.entries(capabilityQuery(params, library.collection.profile))) url.searchParams.set(key, value);
-      const result = await library.playbackChoices(media, require("../core/player-capabilities").parseCapabilities(params));
-      const automatic = result.resources.some(resource => !Object.keys(resource.requiredHeaders).length)
-        ? [{ id: "automatic", mode: "automatic", name: "Automatic", title: "Automatic", url: url.href, delivery: "redirect", requiredHeaders: {}, transport: "http", resolution: null, resolutionState: "on-request", tags: [] }] : [];
-      return { id: media.canonicalId, ...result, resources: [...automatic, ...result.resources] };
+      return { id: media.canonicalId, ...await library.playbackChoices(media, { ...require("../core/player-capabilities").parseCapabilities(params), protocols: require("../core/playback-context").playbackProtocols(params) }) };
     },
     async catchup(id, params) {
-      const media = library.media(id), context = { ...archiveContext(params), ...require("../core/player-capabilities").parseCapabilities(params) };
+      const media = library.media(id), context = { ...archiveContext(params), ...require("../core/player-capabilities").parseCapabilities(params), protocols: require("../core/playback-context").playbackProtocols(params) };
       if (!library.archiveDays(media)) throw Object.assign(new Error("Archive playback is not supported"), { status: 422 });
       return { id: media.canonicalId, ...await library.playbackChoices(media, context) };
     },
-    async subtitles(id) { return { subtitles: (await library.subtitles(library.media(id))).map((item) => ({ id: item.id, language: item.language, ...require("../playback").directResource(item.resource) })) }; }
+    async subtitles(id) { return { subtitles: (await library.subtitles(library.media(id))).map((item) => ({ id: item.id, language: item.language, ...require("../core/direct-resource").directResource(item.resource) })) }; }
   };
 }
 module.exports = { createBossOutput, archiveContext };

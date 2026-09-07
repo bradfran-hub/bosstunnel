@@ -25,7 +25,10 @@ function normalizeCandidate(raw, sourceId, now = Date.now()) {
   for (const [name, value] of Object.entries(raw.requiredHeaders || resource.headers || {})) {
     if (["authorization", "referer", "user-agent", "origin", "x-emby-token", "x-emby-authorization", "x-plex-token", "x-plex-client-identifier", "x-plex-product", "x-plex-version"].includes(name.toLowerCase()) && typeof value === "string" && !/[\r\n]/.test(value)) headers[name] = value;
   }
-  return { sourceId, resource: { url: resource.url }, protocol, ...streamDetails(raw), container: typeof raw.container === "string" && /^[a-z0-9]{1,16}$/i.test(raw.container) ? raw.container.toLowerCase() : null, audio: (Array.isArray(raw.audio) ? raw.audio : []).filter(track => track && typeof track === "object").map(track => ({ codec: track.codec, language: track.language, channels: track.channels })), languages: Array.isArray(raw.languages) ? raw.languages.map(String) : [], subtitles: (Array.isArray(raw.subtitles) ? raw.subtitles : []).filter((subtitle) => httpMedia(subtitle.url)), requiredHeaders: headers, expiresAt: expiresAt || null, resolver: { kind: "resolved-http", ...(raw.resolver?.provider ? { provider: String(raw.resolver.provider) } : {}) } };
+  const positive = value => Number.isFinite(value) && value > 0 ? value : undefined;
+  const video = Object.fromEntries(["bitDepth", "level", "frameRate", "bitrate"].flatMap(key => positive(raw.video?.[key]) ? [[key, raw.video[key]]] : []));
+  if (typeof raw.video?.profile === "string" && raw.video.profile.length <= 128) video.profile = raw.video.profile;
+  return { sourceId, resource: { url: resource.url }, protocol, ...streamDetails(raw), container: raw.container ? String(raw.container).toLowerCase() : null, bitrate: positive(raw.bitrate) || null, video, audio: (Array.isArray(raw.audio) ? raw.audio : []).filter(track => track && typeof track === "object"), languages: Array.isArray(raw.languages) ? raw.languages.map(String) : [], subtitles: (Array.isArray(raw.subtitles) ? raw.subtitles : []).filter((subtitle) => httpMedia(subtitle.url)), requiredHeaders: headers, expiresAt: expiresAt || null, resolver: { kind: "resolved-http", ...(raw.resolver?.provider ? { provider: String(raw.resolver.provider) } : {}) } };
 }
 function compatible(candidate, context) {
   if (context.protocols?.length && !context.protocols.includes(candidate.protocol)) return false;
@@ -58,7 +61,7 @@ class ResolverEngine {
       if (found.has(sourceId)) continue;
       const source = this.graph.source(sourceId);
       if (!source?.enabled || !source.capabilities.streams || !source.capabilities.types.includes(media.type)) continue;
-      if (source.capabilities.identityNamespaces.some((namespace) => identity[namespace])) mappings.push({ sourceId, sourceKey: null, sourceType: media.type, resolverData: {}, priority: source.priority, revision: source.revision });
+      if (source.capabilities.identityNamespaces.some((namespace) => identity[namespace])) { mappings.push({ sourceId, sourceKey: null, sourceType: media.type, resolverData: {}, priority: source.priority, revision: source.revision }); found.add(sourceId); }
     }
     return mappings;
   }
@@ -69,6 +72,7 @@ class ResolverEngine {
       if (media.type !== "channel" || !Number.isFinite(context.start) || !Number.isFinite(context.end) || context.start < 0 || context.end <= context.start || context.end > this.clock() + 60000 || context.end - context.start > 86400000) throw Object.assign(new Error("Invalid archive interval"), { status: 400 });
     }
     if (!Array.isArray(context.allowedSourceIds) || !context.allowedSourceIds.length) throw Object.assign(new Error("No authorized playback sources"), { status: 403 });
+    const accesses = [...new Set(context.allowedSourceIds)].map(id => this.graph.sourceAccess(id)).filter(Boolean);
     const sources = this.candidatesFor(media, [...new Set(context.allowedSourceIds)]);
     const results = []; const failures = []; let next = 0;
     const worker = async () => {
@@ -81,27 +85,29 @@ class ResolverEngine {
       }
     };
     await Promise.all(Array.from({ length: Math.min(this.concurrency, sources.length) }, worker));
+    for (const access of accesses) access.assertCurrent();
     // A source may be revoked while its network request is in flight.
-    const candidates = results.filter((row) => { const source = this.graph.source(row.candidate.sourceId); return source?.enabled && source.revision === row.revision && (!row.candidate.expiresAt || row.candidate.expiresAt > this.clock() + 1000); }).sort((a, b) => b.score - a.score || a.candidate.sourceId.localeCompare(b.candidate.sourceId)).map((row) => row.candidate);
+    const candidates = results.filter((row) => { const source = this.graph.source(row.candidate.sourceId); return source?.enabled && source.revision === row.revision; }).sort((a, b) => b.score - a.score || a.candidate.sourceId.localeCompare(b.candidate.sourceId)).map((row) => row.candidate);
     const seen = new Set();
     const unique = candidates.filter(candidate => {
       const key = JSON.stringify([candidate.sourceId, candidate.resource.url, candidate.requiredHeaders]);
-      if (seen.has(key)) return false;
+      if (seen.has(key) || candidate.expiresAt && candidate.expiresAt <= this.clock() + 1000) return false;
       seen.add(key); return true;
     });
     if (!unique.length) throw Object.assign(new Error("No compatible authorized HTTP streams are available"), { status: 422, failures });
     return { mediaId: media.id, selected: unique[0], candidates: unique, failures };
   }
   async sourceCandidates(media, mapping, context) {
+    const access = this.graph.sourceAccess(mapping.sourceId);
     const contextKey = { output: context.output || "", protocols: context.protocols || [], codecs: context.codecs || [], containers: context.containers || [], language: context.language || "", maxHeight: context.maxHeight || 0, desiredHeight: context.desiredHeight || 0, hdr: context.hdr ?? null, strictCapabilities: Boolean(context.strictCapabilities), directPlay: context.directPlay !== false };
     if (context.start != null) { contextKey.start = context.start; contextKey.end = context.end; }
     const key = crypto.createHash("sha256").update(JSON.stringify(["choices-v1", media.id, mapping.sourceId, mapping.sourceType, mapping.sourceKey, mapping.revision, contextKey])).digest("hex");
     const cached = this.graph.sql("SELECT encrypted_result FROM ResolutionCache WHERE cache_key=? AND expires_at>?").get(key, this.clock());
-    if (cached) return this.graph.secrets.open(cached.encrypted_result);
-    if (this.pending.has(key)) return this.pending.get(key);
-    const task = this.limiter.run(() => this.fetchCandidates(media, mapping, context, key));
+    if (cached) return this.graph.sourceOpen(mapping.sourceId, "resolution-cache", key, cached.encrypted_result);
+    if (this.pending.has(key)) { const result = await this.pending.get(key); access?.assertCurrent(); return result; }
+    const task = this.limiter.run(() => { access?.assertCurrent(); return this.fetchCandidates(media, mapping, context, key, access); }, { signal: access?.signal });
     this.pending.set(key, task);
-    try { return await task; } finally { this.pending.delete(key); }
+    try { const result = await task; access?.assertCurrent(); return result; } finally { if (this.pending.get(key) === task) this.pending.delete(key); }
   }
   invalidatePlayback(mediaId, failed) {
     // Compare resources so an older request cannot evict a newly refreshed URL.
@@ -109,14 +115,15 @@ class ResolverEngine {
       for (const sourceId of new Set(failed.map((candidate) => candidate.sourceId))) {
         const rows = this.graph.sql("SELECT cache_key,encrypted_result FROM ResolutionCache WHERE media_id=? AND source_id=?").all(mediaId, sourceId);
         for (const row of rows) {
-          const cached = this.graph.secrets.open(row.encrypted_result);
+          const cached = this.graph.sourceOpen(sourceId, "resolution-cache", row.cache_key, row.encrypted_result);
           if (cached.some((candidate) => failed.some((old) => old.sourceId === sourceId && old.resource.url === candidate.resource.url && JSON.stringify(old.requiredHeaders) === JSON.stringify(candidate.requiredHeaders)))) this.graph.sql("DELETE FROM ResolutionCache WHERE cache_key=?").run(row.cache_key);
         }
       }
     })();
   }
-  async fetchCandidates(media, mapping, context, key) {
+  async fetchCandidates(media, mapping, context, key, access) {
     const adapter = await this.registry.get(mapping.sourceId);
+    access?.assertCurrent();
     if (!adapter.capabilities.streams) return [];
     const method = context.start == null ? "resolve" : "catchup";
     if (method === "catchup" && !adapter.capabilities.catchup) return [];
@@ -126,8 +133,9 @@ class ResolverEngine {
     let raw;
     try { raw = await Promise.race([adapter[method](media, mapping.sourceKey == null ? null : mapping, { ...context, signal: controller.signal, series: media.type === "episode" ? this.graph.media(media.seriesId) : undefined }), timeoutPromise]); }
     finally { clearTimeout(timeout); }
+    access?.assertCurrent();
     const now = this.clock();
-    const normalized = (Array.isArray(raw) ? raw : []).map((candidate) => normalizeCandidate(candidate, mapping.sourceId, now)).filter(Boolean);
+    const normalized = (Array.isArray(raw) ? raw : []).slice(0, 200).map((candidate) => normalizeCandidate(candidate, mapping.sourceId, now)).filter(Boolean);
     const current = this.graph.source(mapping.sourceId);
     if (!current?.enabled || current.revision !== mapping.revision) return [];
     const ttl = Math.max(0, Math.min(adapter.resolutionTtlMs ?? 30000, 300000));
@@ -135,7 +143,7 @@ class ResolverEngine {
     if (normalized.length && expiresAt > now) {
       this.graph.db.transaction(() => {
         this.graph.sql("DELETE FROM ResolutionCache WHERE expires_at<=?").run(now);
-        this.graph.sql("INSERT INTO ResolutionCache VALUES(?,?,?,?,?,?) ON CONFLICT(cache_key) DO UPDATE SET encrypted_result=excluded.encrypted_result,expires_at=excluded.expires_at").run(key, media.id, mapping.sourceId, mapping.revision, this.graph.secrets.seal(normalized), expiresAt);
+        this.graph.sql("INSERT INTO ResolutionCache VALUES(?,?,?,?,?,?) ON CONFLICT(cache_key) DO UPDATE SET encrypted_result=excluded.encrypted_result,expires_at=excluded.expires_at").run(key, media.id, mapping.sourceId, mapping.revision, this.graph.sourceSeal(mapping.sourceId, "resolution-cache", key, normalized), expiresAt);
         this.graph.sql("DELETE FROM ResolutionCache WHERE cache_key IN (SELECT cache_key FROM ResolutionCache ORDER BY expires_at DESC LIMIT -1 OFFSET ?)").run(this.maxCacheEntries);
       })();
     }

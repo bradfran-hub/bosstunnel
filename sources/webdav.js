@@ -1,4 +1,5 @@
 "use strict";
+const { networkFetch: fetch } = require("../core/network");
 const { capabilities, titleKey } = require("../core/model");
 const { BoundedCache } = require("../core/cache");
 const { xmlElements, child, text, pages } = require("./transport");

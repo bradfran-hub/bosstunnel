@@ -2,8 +2,18 @@
 const { setImmediate: tick } = require("node:timers/promises");
 const { capabilities } = require("../core/model");
 class OutputLibrary {
-  constructor(engine, collection, links) { this.engine = engine; this.graph = engine.graph; this.collectionId = collection.id; this.links = links; }
-  get collection() { const value = this.graph.collection(this.collectionId); if (!value?.sourceIds.length) throw Object.assign(new Error("Library is unavailable"), { status: 404 }); return value; }
+  constructor(engine, collection, links) {
+    this.engine = engine; this.graph = engine.graph; this.collectionId = collection.id; this.links = links;
+    this.access = this.graph.collectionAccess(collection.id);
+  }
+  get collection() {
+    this.links.authorize?.();
+    this.access.assertCurrent();
+    const value = this.graph.collection(this.collectionId);
+    if (!value?.sourceIds.length) throw Object.assign(new Error("Library is unavailable"), { status: 404 });
+    this.graph.collectionAccess(this.collectionId, { includeSignal: false }).assertCurrent();
+    return value;
+  }
   get context() { const collection = this.collection; return { ...collection.profile, allowedSourceIds: collection.sourceIds }; }
   get capabilities() {
     const declarations = this.collection.sourceIds.map((id) => this.graph.source(id).capabilities);
@@ -38,17 +48,22 @@ class OutputLibrary {
     return days;
   }
   page(options = {}) { return this.engine.page({ ...options, sourceIds: this.collection.sourceIds }).map(media => this.project(media)); }
+  count(options = {}) { return this.graph.count({ ...options, sourceIds: this.collection.sourceIds }); }
   async search(options = {}) {
     await this.engine.search({ ...options, sourceIds: this.collection.sourceIds });
     // Membership may change while remote metadata is being retrieved.
     return this.page(options);
   }
   async *items(options = {}) {
+    const revision = this.collection.revision;
     let after = 0;
     while (true) {
       const page = this.page({ ...options, after, limit: 200 });
       if (!page.length) return;
-      for (const item of page) yield item;
+      for (const item of page) {
+        if (this.collection.revision !== revision) throw Object.assign(new Error("Library changed during export; retry the request"), { status: 409 });
+        yield item;
+      }
       after = page.at(-1).id;
       await tick();
     }
@@ -60,7 +75,7 @@ class OutputLibrary {
   }
   artworkResources(media) {
     const art = this.engine.artwork(media.id, this.collection.sourceIds);
-    return Object.fromEntries(Object.entries(art).map(([kind, value]) => [kind, require("../playback").directResource(value.resource)]));
+    return Object.fromEntries(Object.entries(art).map(([kind, value]) => [kind, require("../core/direct-resource").directResource(value.resource)]));
   }
   async resolve(media, context) {
     this.authorize(media);
@@ -76,10 +91,9 @@ class OutputLibrary {
   async playbackChoices(media, context = {}) {
     const result = await this.resolve(media, { output: "http", protocols: ["http", "hls"], ...context });
     const { qualityTags, qualityLabel, completeResolution } = require("../core/stream-details");
-    const { directResource } = require("../playback");
+    const { directResource } = require("../core/direct-resource");
     const resources = result.candidates.map((candidate, index) => {
-      const source = this.graph.source(candidate.sourceId);
-      const tags = qualityTags(candidate), label = qualityLabel(candidate);
+      const source = this.graph.source(candidate.sourceId), tags = qualityTags(candidate), label = qualityLabel(candidate);
       return {
         id: `choice-${index + 1}`, mode: "selected", name: label, qualityLabel: label,
         title: [...new Set([label, ...tags])].join(" | "),
@@ -87,15 +101,14 @@ class OutputLibrary {
         ...directResource({ url: candidate.resource.url, headers: candidate.requiredHeaders }),
         transport: candidate.protocol, quality: candidate.quality, resolution: completeResolution(candidate.resolution),
         codec: candidate.codec, container: candidate.container, hdr: candidate.hdr,
-        audio: candidate.audio, languages: candidate.languages, tags,
-        expiresAt: candidate.expiresAt || null
+        audio: candidate.audio, languages: candidate.languages, tags, expiresAt: candidate.expiresAt || null
       };
     });
     return { resources, failures: result.failures };
   }
-  async subtitles(media) {
+  async subtitles(media, { signal } = {}) {
     this.authorize(media);
-    const results = await this.engine.subtitles(media.id, this.context);
+    const results = await this.engine.subtitles(media.id, { ...this.context, signal });
     const sources = this.collection.sourceIds;
     return results.filter((subtitle) => sources.includes(subtitle.sourceId) && this.graph.source(subtitle.sourceId)?.revision === subtitle.sourceRevision);
   }

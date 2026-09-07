@@ -26,4 +26,25 @@ class BoundedCache {
 function createCaches() {
   return Object.fromEntries(["metadata", "artwork", "identity", "catalogPages", "sourceResponses", "resolution"].map((name) => [name, new BoundedCache({ maxBytes: name === "sourceResponses" ? 16 * 1024 * 1024 : 4 * 1024 * 1024 })]));
 }
-module.exports = { BoundedCache, createCaches };
+function sourceCaches(graph, sourceId, caches) {
+  const access = graph.sourceAccess(sourceId);
+  if (!access) return caches;
+  const crypto = require("node:crypto");
+  return Object.fromEntries(Object.entries(caches).map(([name, cache]) => {
+    const cacheKey = key => `${sourceId}:vault:${crypto.createHash("sha256").update(JSON.stringify([name, key])).digest("hex")}`;
+    return [name, {
+      get(key) {
+        access.assertCurrent();
+        const storedKey = cacheKey(key), value = cache.get(storedKey);
+        return value === undefined ? undefined : graph.sourceOpen(sourceId, "source-cache", storedKey, value);
+      },
+      set(key, value, ttlMs) {
+        access.assertCurrent();
+        const storedKey = cacheKey(key);
+        cache.set(storedKey, graph.sourceSeal(sourceId, "source-cache", storedKey, value), ttlMs);
+      },
+      delete(key) { access.assertCurrent(); cache.delete(cacheKey(key)); }
+    }];
+  }));
+}
+module.exports = { BoundedCache, createCaches, sourceCaches };

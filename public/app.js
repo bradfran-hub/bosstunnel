@@ -4,7 +4,7 @@ const fields = form.elements;
 const list = document.querySelector("#addon-list");
 const output = document.querySelector("#form-output");
 const dialog = document.querySelector("#delete-dialog");
-const base = location.pathname.replace(/\/workspace\/?$/, "").replace(/\/$/, "");
+const base = location.pathname.replace(/\/(?:admin|workspace)\/?$/, "").replace(/\/$/, "");
 let pendingDelete;
 let busy = false;
 let savedSources = [];
@@ -18,8 +18,9 @@ let metricsUpdatedAt = 0;
 let reviewVersion = 0;
 let reviewNext = null;
 const reviewPanel = document.querySelector("#identity-reviews");
+const accessKey = () => window.BossAccount?.mode === "customer" ? window.BossAccount.vault?.unlocked ? window.BossAccount.csrfToken : "" : fields.adminToken.value.trim();
 async function loadReviews(after = 0) {
-  const version = ++reviewVersion, token = fields.adminToken.value.trim();
+  const version = ++reviewVersion, token = accessKey();
   const status = document.querySelector("#review-status");
   const next = document.querySelector("#review-next");
   status.textContent = "Loading reviews...";
@@ -27,14 +28,14 @@ async function loadReviews(after = 0) {
   document.querySelector("#review-list").replaceChildren();
   try {
     const result = await request(`/api/identity-reviews?after=${after}`);
-    if (version !== reviewVersion || token !== fields.adminToken.value.trim()) return;
+    if (version !== reviewVersion || token !== accessKey()) return;
     const identities = values => Object.entries(values || {}).map(([name, value]) => `${escape(name.toUpperCase())}: ${escape(value)}`).join(" / ");
     document.querySelector("#review-list").innerHTML = result.reviews.map(review => `<article class="identity-review"><h3>${escape(review.title)}</h3><p>${escape(review.sourceName)} / ${escape(review.type)} / Pending review</p><dl><dt>Incoming identities</dt><dd>${identities(review.identities) || "None"}</dd>${review.matches.map(match => `<dt>Existing: ${escape(match.title)}${match.year ? ` (${escape(match.year)})` : ""}</dt><dd>${identities(match.identities)}<br>Matched by: ${escape(match.matchedBy.join(", "))}<br><code>${escape(match.canonicalId)}</code></dd>`).join("")}</dl></article>`).join("");
     status.textContent = result.reviews.length ? `${result.reviews.length} pending on this page` : "No pending reviews";
     reviewNext = result.next;
     next.hidden = reviewNext == null;
   } catch (error) {
-    if (version === reviewVersion && token === fields.adminToken.value.trim()) status.textContent = error.message;
+    if (version === reviewVersion && token === accessKey()) status.textContent = error.message;
   }
 }
 reviewPanel.addEventListener("toggle", () => { if (reviewPanel.open && workspaceToken) loadReviews(); });
@@ -50,19 +51,36 @@ function payload() {
   return { name: fields.addonName.value, sourceType: type, baseUrl: fields.baseUrl.value, apiKey: fields.apiKey.value, userId: fields.userId.value, libraryPath: type === "webdav" ? fields.libraryPath.value : fields.libraryId.value, username: fields.username.value, password: fields.password.value, xmltvUrl: fields.xmltvUrl.value, enableCatchup: fields.enableCatchup.checked, ...(editingSource ? { revision: editingSource.revision, addonUrl: "", replaceCredentials: fields.replaceCredentials.checked } : {}) };
 }
 async function request(path, options = {}) {
-  const response = await fetch(`${base}${path}`, { ...options, headers: { "Content-Type": "application/json", "X-Boss-Admin": fields.adminToken.value.trim() } });
+  const customer = window.BossAccount?.mode === "customer";
+  const customerId = customer ? window.BossAccount.customer?.id || "" : "";
+  const csrfToken = customer ? window.BossAccount.csrfToken : "";
+  const response = await fetch(`${base}${path}`, { ...options, credentials: "same-origin", headers: customer ? window.BossAccount.headers() : { "Content-Type": "application/json", "X-Boss-Admin": fields.adminToken.value.trim() } });
   const result = await response.json();
-  if (!response.ok) throw new Error(result.error || "Request failed");
+  const currentSession = customer && window.BossAccount?.mode === "customer" && window.BossAccount.customer?.id === customerId && window.BossAccount.csrfToken === csrfToken;
+  if (currentSession && response.headers.get("x-boss-customer") && response.headers.get("x-boss-customer") !== customerId) { window.BossAccount.clear(); throw new Error("Account session changed; sign in again"); }
+  if (currentSession && response.status === 401 && window.BossAccount.customer) window.BossAccount.clear();
+  if (currentSession && response.status === 423 && window.BossAccount.customer) window.BossAccount.locked();
+  if (!response.ok) throw Object.assign(new Error(result.error || "Request failed"), { status: response.status });
   return result;
 }
 function empty(title, message, icon = "folder-open") {
   list.innerHTML = `<div class="empty"><i data-lucide="${icon}"></i><h3>${escape(title)}</h3><p>${escape(message)}</p></div>`; icons();
 }
 function exportView(addon) {
-  if (format.value === "xtream") return `<dl class="credentials">${[["Server", addon.xtream.server], ["Username", addon.xtream.username], ["Password", addon.xtream.password]].map(([label, value]) => `<dt>${label}</dt><dd><code>${escape(value)}</code><button class="icon-button" data-copy="${escape(value)}" title="Copy ${label.toLowerCase()}" aria-label="Copy ${label.toLowerCase()}"><i data-lucide="copy"></i></button></dd>`).join("")}</dl>`;
+  const rotate = window.BossAccount?.mode === "customer" ? `<button class="icon-button" data-rotate-installation="${escape(addon.id)}" title="Rotate installation links" aria-label="Rotate installation links"><i data-lucide="key-round"></i></button>` : "";
+  if (!addon.xtream || !addon.bossUrl) return `${rotate}<p>${addon.installationRevoked ? "Installation links revoked" : "Owner access required"}</p>`;
+  if (format.value === "xtream") return `${rotate}<dl class="credentials">${[["Server", addon.xtream.server], ["Username", addon.xtream.username], ["Password", addon.xtream.password]].map(([label, value]) => `<dt>${label}</dt><dd><code>${escape(value)}</code><button class="icon-button" data-copy="${escape(value)}" title="Copy ${label.toLowerCase()}" aria-label="Copy ${label.toLowerCase()}"><i data-lucide="copy"></i></button></dd>`).join("")}</dl>`;
   const url = format.value === "m3u" ? addon.playlistUrl : format.value === "compatibility" ? addon.compatibilityUrl : addon.bossUrl;
-  return `<code class="install-url">${escape(url)}</code><div class="addon-actions"><a href="${escape(url)}" target="_blank" rel="noreferrer">${format.value === "m3u" ? "Download playlist" : "Open addon"}<i data-lucide="arrow-up-right"></i></a><button data-copy="${escape(url)}"><i data-lucide="copy"></i>Copy ${format.value === "m3u" ? "playlist" : "install"} URL</button></div>`;
+  return `${rotate}<code class="install-url">${escape(url)}</code><div class="addon-actions"><a href="${escape(url)}" target="_blank" rel="noreferrer">${format.value === "m3u" ? "Download playlist" : "Open addon"}<i data-lucide="arrow-up-right"></i></a><button data-copy="${escape(url)}"><i data-lucide="copy"></i>Copy ${format.value === "m3u" ? "playlist" : "install"} URL</button></div>`;
 }
+document.addEventListener("click", async event => {
+  const button = event.target.closest("[data-rotate-installation]");
+  if (!button || button.disabled || !confirm("Rotate installation links? Existing BOSS, playlist and Xtream connections will stop working until updated.")) return;
+  button.disabled = true;
+  try { await request(`/api/libraries/${button.dataset.rotateInstallation}/installation/rotate`, { method: "POST" }); await refresh(); show("Installation links rotated."); }
+  catch (error) { show(error.message, true); }
+  finally { button.disabled = false; }
+});
 function render() {
   list.innerHTML = savedSources.map((addon) => {
     const failed = addon.sync?.status === "failed" || addon.jobs?.some((job) => job.status === "failed");
@@ -84,7 +102,7 @@ function render() {
 format.addEventListener("change", () => { if (savedSources.length || savedLibraries.length) render(); });
 async function refresh(options = {}) {
   const version = ++refreshVersion;
-  const token = fields.adminToken.value.trim();
+  const token = accessKey();
   const background = options.background === true && token === workspaceToken;
   clearTimeout(refreshTimer);
   if (!background) {
@@ -102,13 +120,13 @@ async function refresh(options = {}) {
     document.querySelector("#libraries-section").hidden = true;
     document.querySelector("#library-list").replaceChildren();
   }
-  if (!token) { workspaceToken = ""; cancelLibraryEdit(); const picker = document.querySelector("#library-sources"); picker.replaceChildren(); delete picker.dataset.version; document.querySelector("#source-count").textContent = "0"; return empty("Workspace locked", "Admin access required", "lock-keyhole"); }
+  if (!token) { workspaceToken = ""; cancelLibraryEdit(); const picker = document.querySelector("#library-sources"); picker.replaceChildren(); delete picker.dataset.version; document.querySelector("#source-count").textContent = "0"; return empty("Workspace locked", window.BossAccount?.mode === "customer" ? "Sign in to manage sources" : "Admin access required", "lock-keyhole"); }
   if (!background) empty("Loading addons", "Connecting to your workspace", "loader-circle");
   try {
     const { addons } = await request("/api/addons");
-    if (version !== refreshVersion || token !== fields.adminToken.value.trim()) return;
+    if (version !== refreshVersion || token !== accessKey()) return;
     const { libraries } = await request("/api/libraries");
-    if (version !== refreshVersion || token !== fields.adminToken.value.trim()) return;
+    if (version !== refreshVersion || token !== accessKey()) return;
     savedLibraries = libraries;
     workspaceToken = token;
     document.querySelector("#libraries-section").hidden = false;
@@ -118,7 +136,7 @@ async function refresh(options = {}) {
       try {
         const catalogue = await request("/api/catalogue-status");
         const evidence = await request("/api/playback-evidence");
-        if (version !== refreshVersion || token !== fields.adminToken.value.trim()) return;
+        if (version !== refreshVersion || token !== accessKey()) return;
         for (const type of ["movie", "series"]) {
           const count = catalogue.counts[type] || 0;
           document.querySelector(`#${type}-total`).textContent = count.toLocaleString();
@@ -131,14 +149,14 @@ async function refresh(options = {}) {
         document.querySelector("#catalogue-updated").textContent = `Updated ${new Date(metricsUpdatedAt).toLocaleTimeString()}`;
         document.querySelector("#catalogue-health").hidden = false;
       } catch {
-        if (version !== refreshVersion || token !== fields.adminToken.value.trim()) return;
+        if (version !== refreshVersion || token !== accessKey()) return;
         document.querySelector("#catalogue-updated").textContent = "Statistics unavailable";
       }
     }
     if (!addons.length) empty("No addons yet", "Your connected libraries will appear here.");
     refreshTimer = setTimeout(() => refresh({ background: true }), addons.some((addon) => addon.syncing) ? 2000 : 30000);
   } catch (error) {
-    if (version !== refreshVersion || token !== fields.adminToken.value.trim()) return;
+    if (version !== refreshVersion || token !== accessKey()) return;
     if (background) refreshTimer = setTimeout(() => refresh({ background: true }), 5000);
     else empty("Workspace unavailable", error.message, "lock-keyhole");
   }
@@ -173,7 +191,10 @@ fields.sourceType.forEach((input) => input.addEventListener("change", sourceChan
 fields.adminToken.addEventListener("change", refresh);
 document.querySelector("#probe-btn").addEventListener("click", () => submit(true));
 document.querySelector("#refresh-btn").addEventListener("click", refresh);
-document.querySelector("#lock-btn").addEventListener("click", () => { fields.adminToken.value = ""; cancelSourceEdit(); output.hidden = true; refresh(); });
+document.querySelector("#lock-btn").addEventListener("click", async () => {
+  if (window.BossAccount?.mode === "customer") { try { await window.BossAccount.logout(); } catch (error) { show(error.message, true); } return; }
+  fields.adminToken.value = ""; cancelSourceEdit(); output.hidden = true; refresh();
+});
 list.addEventListener("click", async (event) => {
   const edit = event.target.closest("[data-edit-source]");
   if (edit && !busy) {
@@ -275,4 +296,5 @@ document.querySelector("#confirm-delete").addEventListener("click", async () => 
   catch (error) { dialog.close(); show(error.message, true); }
 });
 fetch(`${base}/healthz`).then((r) => { if (!r.ok) throw new Error(); document.querySelector("#service-status").textContent = "Service online"; document.querySelector(".top-status").classList.add("online"); }).catch(() => { document.querySelector("#service-status").textContent = "Service unavailable"; });
-sourceChanged(); refresh(); icons();
+window.addEventListener("boss-account-change", () => { cancelSourceEdit(); cancelLibraryEdit(); output.hidden = true; refresh(); });
+sourceChanged(); (window.BossAccount?.ready || Promise.resolve()).then(() => refresh()); icons();

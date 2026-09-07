@@ -1,4 +1,5 @@
 "use strict";
+const { networkFetch: fetch } = require("../core/network");
 const crypto = require("node:crypto");
 const { capabilities } = require("../core/model");
 const { normalizeCandidate } = require("../core/resolver");

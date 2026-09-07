@@ -8,7 +8,7 @@ Player-visible descriptive metadata is selected from active sources in the conne
 
 `GET /bossmedia/a/{library}/addon.boss`
 
-The response uses `Content-Disposition: attachment; filename="addon.boss"`. The App SDK accepts hosted links with `BossClient.fromAddon(url)` and local File/Blob, UTF-8 bytes or text with `BossClient.fromFile(file, { trustedOrigin, token, signal })`. Imports are limited to 8 MiB. The application must obtain explicit trust for the origin before supplying credentials; do not automatically trust a host named in an imported file. API endpoint templates in the descriptor's `resources` object must stay on that origin. This rule does NOT restrict playback, subtitle or artwork URLs returned inside API responses to the BOSS origin: those are direct upstream resources. Files contain data only, not scripts or media. Keep private access links confidential.
+The response uses `Content-Disposition: attachment; filename="addon.boss"`. The App SDK accepts hosted links with `BossClient.fromAddon(url)` and local File/Blob, UTF-8 bytes or text with `BossClient.fromFile(file, { trustedOrigin, token, signal })`. Imports are limited to 8 MiB. The application must obtain explicit trust for the origin before supplying credentials; do not automatically trust a host named in an imported file. Resource URLs must stay on that origin. Files contain data only, not scripts or media. Keep private access links confidential.
 
 ```json
 {
@@ -35,7 +35,7 @@ Capability declarations are explicit booleans. Optional subtitles and guide reso
 
 Response: `{ "items": [MediaItem], "next": "cursor-or-null" }`. Use the returned cursor unchanged. Types are movie, series, season, episode, channel and event where declared. Omitting type queries all accessible types. Optional `search` performs bounded metadata discovery through authorized sources and searches the canonical graph. No playback lookup occurs while listing or searching.
 
-MediaItem has `id`, `type`, `title`, optional descriptive metadata, `identities` (IMDb/TMDB/TVDB), upstream artwork URLs plus optional header-aware artworkResources and `playbackState: UNRESOLVED`. Episodes retain canonical `seriesId`, `seasonNumber` and `episodeNumber`. `GET {media}` returns `{ "media": MediaItem }` and may hydrate metadata without resolving video.
+MediaItem has `id`, `type`, `title`, optional descriptive metadata, `identities` (IMDb/TMDB/TVDB), protected artwork URLs and `playbackState: UNRESOLVED`. Episodes retain canonical `seriesId`, `seasonNumber` and `episodeNumber`. `GET {media}` returns `{ "media": MediaItem }` and may hydrate metadata without resolving video.
 
 ## Live Channels and Guides
 
@@ -49,63 +49,15 @@ Imported guide identities are stored per source mapping so merged channels can r
 
 The advertised per-channel window is computed from active source mappings authorized for this library. A longer window from another library or a removed source does not apply. Refreshing a provider to a shorter window updates the advertised value; historical merged channel metadata is not authoritative for archive capability.
 
-An optional `resources.catchup` template accepts a channel ID and `start`/`end` UTC millisecond parameters. `BossClient.catchup(id, { start, end, signal })` exposes it through native and authenticated Xtream extension connections, including M3U-discovered clients. Responses contain exact upstream playback resources and required player headers. Ordinary playback remains separate and does not select an archive implicitly.
+An optional `resources.catchup` template accepts a channel ID and `start`/`end` UTC millisecond parameters. `BossClient.catchup(id, { start, end, signal })` exposes it through native and authenticated Xtream extension connections, including M3U-discovered clients. Responses contain protected playback resources. Ordinary playback remains separate and does not select an archive implicitly.
 
 Native sources enable catch-up only with declared channel/stream support, a catch-up resource and per-channel positive `channel.catchupDays` (up to 365 days). Source-specific windows remain in encrypted resolver mappings. The canonical resolver validates intervals, separates interval caches and checks current authorization. Intervals cannot exceed 24 hours or end more than one minute in the future. Unsupported or unavailable archives return 422. Native timeshift remains unsupported; no local DVR is created. The author SDK supports an optional catchup({ id, start, end }, { signal }) handler returning the same resource array as playback. It requires channel types, media and playback handlers. Before invoking it, the SDK validates the interval and reads the channel's current metadata to enforce its declared archive window; invalid requests never reach the archive handler. Authors must return only authorized recordings for the requested interval, or an empty array when unavailable.
 
 ## Playback Resources
 
-`GET {playback}` resolves current candidates and returns `{ "id": "canonical-id", "resources": [...] }` for playable media types. A series or season returns an empty resource list. Catalogue and metadata requests never perform this stream lookup.
+`GET {playback}` returns `{ "id": "canonical-id", "resources": [{ "url": "protected-play-url", "transport": "http", "resolution": "on-request" }] }` for playable media types. A series or season returns an empty resource list.
 
-The gateway returns every compatible authorized choice (`mode: "selected"`). When at least one candidate needs no custom request headers, an optional `Automatic` redirect resource precedes the choices. Header-only libraries have no Automatic option. Render the complete array, not only `resources[0]`. Multiple versions from one provider and versions from different providers remain separate. Only identical URL/header combinations within the same provider are deduplicated. Unavailable sources can be reported in `failures` using source IDs and generic error codes; error messages do not expose credentials.
-
-Each selected resource contains the exact upstream `url`, `delivery: "direct"`, `requiredHeaders`, `headerOrigin`, `transport`, `name`, `qualityLabel`, `title`, `source: { id, name, protocol }`, `tags`, `expiresAt` (UTC milliseconds or null when unknown), and nullable `quality`, `resolution: { width, height }`, `codec`, `container`, `hdr`, plus `audio` and `languages`. `name` and `qualityLabel` display resolution, for example `1080p` or `4K UHD`, never the BOSS/provider brand. Display `source.name` separately. `quality` describes release provenance such as WEB-DL, not resolution. Tags are source-reported metadata or conservative extraction from release labels, not verified media analysis. Missing quality is `Unknown quality`, never an invented HD/4K claim. Render labels as text, not HTML. Choice IDs are response-local and must not be persisted as media identity.
-
-Playback flows **Provider -> Player**, never Provider -> BOSS -> Player. BOSS does not fetch video, probe playback URLs, relay bytes, remux, transcode, rewrite HLS playlists, or host a proxy fallback. Selected URLs are upstream URLs, not encrypted BOSS tickets. They are not modified to insert credentials, replace hosts or rewrite signatures. Supply `requiredHeaders` separately to the player's HTTP stack, scoped only to `headerOrigin`. Never forward BOSS API credentials to the provider. Strip sensitive headers on cross-origin redirects and do not send provider credentials to unrelated HLS child origins. Sources needing a different header policy are incompatible until the player/source explicitly supports it.
-
-Use `playbackRequest(resource, { supportsHeaders: true })` from the app SDK to prepare a player request, only when the player really supports scoped headers. It performs validation but no media requests and does not implement a media engine or redirect handler. Without header support it throws 422 for header-dependent streams. The same helper handles native subtitles and `artworkResources`; simple `artwork` URLs alone cannot carry headers.
-
-Obtain playback details immediately before starting. `expiresAt: null` means unknown, not permanent. Resolution caches remain short-lived and source-specific. The upstream decides link lifetime and access; a BOSS policy change prevents new handoffs but cannot revoke an already-issued upstream URL. Direct links and headers may expose provider bearer credentials to the authorized player. Only connect players and library recipients trusted with that access. Never log or publicly cache them. Historical server byte-delivery evidence is not evidence of new direct playback success.
-
-This resource contract also applies to the authenticated Xtream `boss_api?action=playback` extension and Boss-aware M3U discovery. Standard Xtream movie/series/live and M3U playback routes resolve lazily and return HTTP 307 with the exact upstream Location and an empty body. GET, HEAD and Range are handled by the player/upstream; BOSS never fetches the media. Redirect-only outputs prefer candidates needing no custom headers. If every candidate requires headers, BOSS still redirects to the exact selected URL; the upstream may return 401 because HTTP redirects cannot teach ordinary IPTV players provider headers. The compatibility addon returns all upstream URLs and its protocol-defined request-header hints. Those hints do not enable any BOSS proxy; support depends on the consuming client.
-
-Automatic resolves against currently authorized sources and the playback profile, choosing a redirect-compatible candidate. After handoff BOSS cannot observe playback success, decode failure, seeking or upstream HTTP errors, and cannot automatically switch providers. Apps implement bounded retries: on an expired/failed choice request fresh options, offer another compatible choice, and respect upstream 429/Retry-After. Do not retry indefinitely. Catalogue presence is not a playback guarantee. Players must reject non-media responses, torrent payloads and DRM-protected resources; BOSS excludes declared torrent/DRM candidates and torrent URLs but does not inspect direct response bytes. Already-resolved authorized HTTP resources are permitted without acquisition.
-
-## Direct Playback Integration Checklist
-
-### Separate API Trust From Media Trust
-
-Use the configured addon origin to validate the descriptor's catalogue, media,
-playback lookup, subtitles lookup and guide endpoints. Send addon authentication
-only to those API endpoints. Do not reuse this same-origin API validator on the
-provider URLs returned by playback: direct delivery normally uses another host.
-Rejecting every non-BOSS playback host makes available sources appear missing.
-
-The BOSS protocol permits HTTP and HTTPS upstream media; it does not promise
-that all configured providers support TLS. The reference playbackRequest helper
-accepts either without contacting the provider. Applications may impose stronger
-transport policies, but must show a specific blocked-origin/insecure-transport
-error for each rejected choice, not "no sources". Retain other permitted choices
-when one source is rejected. Any HTTP permission must be explicit and scoped to
-the user's trusted provider; never globally disable TLS validation or trust
-arbitrary local-network destinations. HTTP exposes URLs, headers and media to
-network observers, including any credentials in them.
-
-An HTTPS BOSS Automatic URL may redirect to an HTTP provider. The initial HTTPS
-hop does not secure the final connection. An HTTPS-only app needs a supported
-HTTPS URL from that provider, not a changed URL scheme or restored BOSS proxy.
-For HTTPS resources rejected as "not permitted", check the app's media-origin
-policy separately from its API-origin policy. Never forward BOSS API tokens to
-provider hosts, even when media playback on those hosts is allowed.
-
-- Discover the descriptor through .boss, the authenticated Xtream extension, or M3U discovery. All three BOSS-aware modes expose the same resource contract; ordinary IPTV formats do not gain remote search or arbitrary headers.
-- Fetch categories and follow catalogue cursors; use search offsets for expanded discovery. Fetch series metadata and page episodes using seriesId. Never play a series/season record.
-- Request playback with only advertised codec/height/HDR capabilities. Render every source choice, resolution label, codec, HDR, audio and language tags; unknown fields remain unknown. These are compatibility hints, not transcoding controls.
-- Pass the exact selected URL and only its required headers to the player. The player's HTTP stack must enforce origin scoping for redirects, HLS playlists, segments, subtitle and artwork requests. No credential injection into URLs, gateway rewriting or hidden relay.
-- Implement expiry handling, cancellation, player decode/network errors, bounded retries and source selection. A link may be IP-bound to the resolver server, geographically restricted, or unreachable from the player; direct mode does not bypass those restrictions. Provider support/configuration must allow the player's connection.
-- For browser players, upstream CORS, permitted headers and HTTPS/mixed-content rules must allow playback. BOSS cannot fix upstream CORS or browser-restricted User-Agent/Referer/Origin headers by proxying.
-- Follow advertised subtitles, categories, live, guide and catchup capabilities. Stream XMLTV into a bounded guide store, join programme channel IDs to channel.epgId, and use UTC milliseconds for catchup. BOSS fetches and translates metadata/catalogues/EPG, not media feeds. Seeking, adaptive playback and track selection belong to the player's media engine. Timeshift is not emulated.
-- Verify actual playback, HLS child-origin handling, range/seek, live, episodes, subtitles and archives on each supported platform. No automatic certification is implied. Keep provider URLs, headers and private addon links out of telemetry, shared caches and crash reports.
+Requesting the protected play URL invokes the independent resolver against the library's currently authorized sources and playback profile. Catalogue presence is not a promise of stream availability. HTTP 422 means no usable resource could be provided. Text documents are not playable media. Torrent URLs, engines and payloads are excluded; already-resolved authorized HTTP resources are permitted.
 
 ## Other Outputs
 

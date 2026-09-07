@@ -4,6 +4,7 @@ Open-source BOSS protocol, app SDK, addon SDK and canonical media gateway.
 Original code and protocol documentation are licensed under [MIT](LICENSE).
 
 - Website: https://bosstunnel.com
+- Customer workspace: https://bosstunnel.com/workspace
 - App integration: https://bosstunnel.com/sdk
 - Addon authors: https://bosstunnel.com/sdk/addons
 - Protocol specification: [BOSS-ADDON.md](BOSS-ADDON.md)
@@ -54,10 +55,13 @@ Keep access logs free of credential-bearing URLs and query strings.
 
 For a direct Node deployment, install dependencies with `npm ci`, set the same
 environment variables in your process environment, then use `npm start`.
-The admin token unlocks source/library management; this release is an
-administrator-managed gateway, not a public customer registration service.
-Only trusted administrators should configure sources: private-network source
-access is intentionally supported. Do not expose source creation to strangers.
+The admin token unlocks the separate administrator workspace. With
+`BOSS_CUSTOMER_ACCOUNTS=true`, customers create accounts without email and manage
+only their own public HTTP(S) sources and libraries. Customer usernames, source
+configuration, labels, profiles, caches and installation credentials are encrypted
+with password-wrapped vault keys. Recovery creates a fresh empty vault and deletes
+data that cannot be decrypted without the lost password. See
+[CUSTOMER-ACCOUNTS.md](CUSTOMER-ACCOUNTS.md).
 
 ## Develop And Test
 
@@ -98,9 +102,9 @@ optional private `BOSS_ADDON_TOKEN`. Never publish live access links in issues.
 
 ## Release Scope
 
-This initial publication tracks the deployed schema-10 gateway and SDK release
-of 2026-09-07. Unreleased account management and additional output protocols are
-not bundled or advertised as complete. Import duration and guide availability
+This publication tracks the deployed schema-16 gateway, SDK and customer-account
+release of 2026-09-07. Additional server-compatible outputs remain experimental
+unless explicitly documented as released. Import duration and guide availability
 depend on providers. Use persistent storage and verified backups for large libraries.
 
 ## Licence And Branding

@@ -25,9 +25,15 @@ function createAddonOutput(library) {
     const media = item(id);
     if (media.type === "series") return { streams: [] };
     const { resources } = await library.playbackChoices(media);
-    return { streams: resources.map(resource => ({ name: resource.qualityLabel, title: [resource.title, resource.source.name].join("\n"), url: resource.url, behaviorHints: { notWebReady: true, ...(Object.keys(resource.requiredHeaders).length ? { proxyHeaders: { request: resource.requiredHeaders } } : {}) } })) };
+    return { streams: resources.map(resource => ({
+      name: resource.qualityLabel, title: resource.title, url: resource.url,
+      behaviorHints: { notWebReady: true, proxyHeaders: { request: resource.requiredHeaders } },
+      boss: { delivery: "direct", source: resource.source, qualityLabel: resource.qualityLabel,
+        resolution: resource.resolution, codec: resource.codec, hdr: resource.hdr, tags: resource.tags,
+        requiredHeaders: resource.requiredHeaders, headerOrigin: resource.headerOrigin, expiresAt: resource.expiresAt }
+    })) };
   });
-  if (supported.subtitles) builder.defineSubtitlesHandler(async ({ id }) => ({ subtitles: (await library.subtitles(item(id))).map((subtitle) => ({ id: subtitle.id, lang: subtitle.language, url: library.links.resource(subtitle.resource, subtitle.sourceId) })) }));
+  if (supported.subtitles) builder.defineSubtitlesHandler(async ({ id }) => ({ subtitles: (await library.subtitles(item(id))).map((subtitle) => ({ id: subtitle.id, lang: subtitle.language, ...require("../core/direct-resource").directResource(subtitle.resource) })) }));
   const iface = builder.getInterface();
   // Series video arrays are streamed from indexed episode pages instead of materialized.
   async function* metadataBody(id) {

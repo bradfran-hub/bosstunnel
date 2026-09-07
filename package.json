@@ -5,15 +5,21 @@
   "description": "Universal media-server adapter that exposes owned media sources as installable Boss-compatible addons.",
   "main": "server.js",
   "scripts": {
-    "start": "pm2-runtime ecosystem.config.cjs",
+    "start": "NODE_ENV=production node server.js",
     "check": "node check.cjs",
-    "test": "node --test test/*.cjs"
+    "test": "node --test --test-concurrency=1 test/integration.cjs test/graph.cjs test/resolver.cjs test/canonical-sources.cjs test/dash.cjs test/jellyfin-http.cjs test/jellyfin-playback.cjs test/player-capabilities.cjs test/webdav.cjs test/customer-auth.cjs test/network.cjs test/client-peer.cjs test/epg-discovery.cjs test/password-vault.cjs test/customer-vault.cjs test/source-vault.cjs test/output-vault.cjs test/refresh-vault.cjs test/output-links.cjs test/native-direct.cjs test/developer-mcp.cjs",
+    "test:ui": "node test/browser.cjs",
+    "test:customer-ui": "node test/customer-browser.cjs",
+    "test:customer-edge": "node test/customer-edge.cjs",
+    "test:scale": "node test/scale.cjs",
+    "test:pipeline-scale": "node test/pipeline-scale.cjs",
+    "test:playback": "node test/playback-client.cjs",
+    "test:dash-playback": "node test/dash-playback.cjs"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=20.18.1"
   },
   "license": "MIT",
-  "repository": "github:bradfran-hub/bosstunnel",
   "overrides": {
     "router": "2.2.0",
     "qs": "6.16.0",
@@ -25,11 +31,13 @@
     "@streamparser/json": "^0.0.26",
     "axios": "^1.20.0",
     "better-sqlite3": "^12.11.1",
+    "ipaddr.js": "2.5.0",
     "iptv-playlist-parser": "^0.15.2",
     "lucide": "^1.41.0",
     "pm2": "^7.0.4",
     "sax": "^1.6.1",
     "stremio-addon-sdk": "^1.6.10",
+    "undici": "7.29.1",
     "zod": "4.5.4"
   },
   "devDependencies": {

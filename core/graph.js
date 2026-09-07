@@ -22,9 +22,10 @@ class MediaGraph {
     this.db.pragma("temp_store = FILE");
     this.db.pragma("busy_timeout = 5000");
     const version = this.db.pragma("user_version", { simple: true });
-    if (version > 10) throw new Error("Database schema is newer than this application");
+    if (version > 16) throw new Error("Database schema is newer than this application");
     this.db.transaction(() => {
       this.db.exec(fs.readFileSync(path.join(__dirname, "schema.sql"), "utf8"));
+      if (!this.db.pragma("table_info(Customers)").some(column => column.name === "encrypted_profile")) this.db.exec("ALTER TABLE Customers ADD COLUMN encrypted_profile TEXT");
       if (version < 10) this.db.exec("INSERT INTO SourceMediaSearch(SourceMediaSearch) VALUES('rebuild')");
       if (version < 9) this.db.exec(`INSERT OR IGNORE INTO CategoryProvenance SELECT mc.media_id,mc.category_id,'','','["legacy"]',0 FROM MediaCategories mc`);
       if (!this.db.pragma("table_info(PlaybackEvidence)").some(column => column.name === "last_failure")) {
@@ -46,10 +47,67 @@ class MediaGraph {
     return this.statements.get(text);
   }
   close() { this.db.close(); }
-  addSource({ id = crypto.randomUUID(), protocol, name, configuration, priority = 0, capabilities: declaration = {} }) {
+  sourceOwner(sourceId) { return this.sql("SELECT customer_id FROM CustomerSources WHERE source_id=?").get(sourceId)?.customer_id || null; }
+  startupSources() {
+    return this.sql("SELECT s.id FROM Sources s WHERE s.enabled=1 AND NOT EXISTS(SELECT 1 FROM CustomerSources o WHERE o.source_id=s.id) ORDER BY s.priority DESC,s.id").iterate();
+  }
+  customerAccess(customerId) {
+    if (!this.customerVaults) throw Object.assign(new Error("Vault is locked; sign in with your password to unlock it"), { status: 423 });
+    return this.customerVaults.vaultAccess(customerId);
+  }
+  sourceAccess(sourceId) {
+    const owner = this.sourceOwner(sourceId);
+    return owner ? this.customerAccess(owner) : null;
+  }
+  collectionAccess(collectionId, { includeSignal = true } = {}) {
+    const collection = this.collection(collectionId);
+    if (!collection) throw Object.assign(new Error("Library is unavailable"), { status: 404 });
+    const owner = this.sql("SELECT customer_id FROM CustomerCollections WHERE collection_id=?").get(collectionId)?.customer_id;
+    const owners = new Set([owner, ...collection.sourceIds.map(id => this.sourceOwner(id))].filter(Boolean));
+    const accesses = [...owners].map(id => this.customerAccess(id));
+    return { signal: includeSignal && accesses.length ? AbortSignal.any(accesses.map(access => access.signal)) : undefined,
+      assertCurrent() { for (const access of accesses) access.assertCurrent(); } };
+  }
+  customerSeal(customerId, purpose, id, value) {
+    this.customerAccess(customerId).assertCurrent();
+    return `boss-vault:1:${this.customerVaults.vaults.seal(customerId, purpose, id, value)}`;
+  }
+  customerOpen(customerId, purpose, id, value) {
+    this.customerAccess(customerId).assertCurrent();
+    if (typeof value !== "string" || !value.startsWith("boss-vault:1:")) throw Object.assign(new Error("Record requires explicit password-vault migration"), { status: 409 });
+    return this.customerVaults.vaults.open(customerId, purpose, id, value.slice(13));
+  }
+  sourceRecordId(sourceId, identity) {
+    return crypto.createHash("sha256").update(JSON.stringify([sourceId, identity])).digest("hex");
+  }
+  customerLabel(customerId, purpose, id, value) {
+    return customerId ? this.customerSeal(customerId, purpose, id, value) : value;
+  }
+  openCustomerLabel(customerId, purpose, id, value) {
+    return customerId ? this.customerOpen(customerId, purpose, id, value) : value;
+  }
+  sourceSeal(sourceId, purpose, identity, value) {
+    const owner = this.sourceOwner(sourceId);
+    return owner ? this.customerSeal(owner, purpose, this.sourceRecordId(sourceId, identity), value) : this.secrets.seal(value);
+  }
+  sourceOpen(sourceId, purpose, identity, value) {
+    const owner = this.sourceOwner(sourceId);
+    if (!owner) return this.secrets.open(value);
+    this.customerAccess(owner).assertCurrent();
+    if (typeof value !== "string" || !value.startsWith("boss-vault:1:")) throw Object.assign(new Error("Source requires explicit password-vault migration"), { status: 409 });
+    return this.customerVaults.vaults.open(owner, purpose, this.sourceRecordId(sourceId, identity), value.slice(13));
+  }
+  addSource({ id = crypto.randomUUID(), protocol, name, configuration, priority = 0, capabilities: declaration = {}, customerId }) {
     const now = this.clock();
     this.db.transaction(() => {
-      this.sql("INSERT INTO Sources(id,protocol,name,configuration,priority,created_at,updated_at) VALUES(?,?,?,?,?,?,?)").run(id, protocol, name, this.secrets.seal(configuration), priority, now, now);
+      if (customerId) {
+        this.customer(customerId);
+        if (this.sql("SELECT count(*) n FROM CustomerSources WHERE customer_id=?").get(customerId).n >= 32) throw Object.assign(new Error("Maximum 32 sources per account"), { status: 409 });
+      }
+      const encrypted = customerId ? this.customerSeal(customerId, "source-config", this.sourceRecordId(id, "configuration"), configuration) : this.secrets.seal(configuration);
+      const storedName = this.customerLabel(customerId, "source-name", id, name);
+      this.sql("INSERT INTO Sources(id,protocol,name,configuration,priority,created_at,updated_at) VALUES(?,?,?,?,?,?,?)").run(id, protocol, storedName, encrypted, priority, now, now);
+      if (customerId) this.sql("INSERT INTO CustomerSources VALUES(?,?)").run(id, customerId);
       this.setCapabilities(id, declaration);
     })();
     return id;
@@ -57,8 +115,10 @@ class MediaGraph {
   source(id, { credentials = false } = {}) {
     const row = this.sql("SELECT s.*,c.declaration FROM Sources s LEFT JOIN SourceCapabilities c ON c.source_id=s.id WHERE s.id=?").get(id);
     if (!row) return null;
-    const result = { id: row.id, protocol: row.protocol, name: row.name, enabled: Boolean(row.enabled), priority: row.priority, revision: row.revision, capabilities: JSON.parse(row.declaration || "{}"), createdAt: row.created_at, updatedAt: row.updated_at };
-    if (credentials) result.configuration = this.secrets.open(row.configuration);
+    const unavailable = this.sql("SELECT 1 FROM CustomerSources o JOIN Customers c ON c.id=o.customer_id WHERE o.source_id=? AND c.enabled=0").get(id);
+    const owner = this.sourceOwner(id);
+    const result = { id: row.id, protocol: row.protocol, name: this.openCustomerLabel(owner, "source-name", id, row.name), enabled: Boolean(row.enabled) && !unavailable, priority: row.priority, revision: row.revision, capabilities: JSON.parse(row.declaration || "{}"), createdAt: row.created_at, updatedAt: row.updated_at };
+    if (credentials) result.configuration = this.sourceOpen(id, "source-config", "configuration", row.configuration);
     return result;
   }
   sources() { return this.sql("SELECT id FROM Sources ORDER BY priority DESC,id").all().map((row) => this.source(row.id)); }
@@ -72,40 +132,74 @@ class MediaGraph {
   }
   updateSource(id, patch) {
     this.revision++;
-    const source = this.source(id, { credentials: true });
-    if (!source) throw new Error("Source not found");
+    const existing = this.sql("SELECT name,configuration,priority FROM Sources WHERE id=?").get(id);
+    if (!existing) throw new Error("Source not found");
     this.db.transaction(() => {
-      this.sql("UPDATE Sources SET name=?,configuration=?,enabled=?,priority=?,revision=revision+1,updated_at=? WHERE id=?").run(patch.name ?? source.name, this.secrets.seal(patch.configuration ?? source.configuration), Number(patch.enabled ?? source.enabled), patch.priority ?? source.priority, this.clock(), id);
+      const configuration = patch.configuration == null ? existing.configuration : this.sourceSeal(id, "source-config", "configuration", patch.configuration);
+      const owner = this.sourceOwner(id);
+      const storedName = patch.name == null ? existing.name : this.customerLabel(owner, "source-name", id, patch.name);
+      this.sql("UPDATE Sources SET name=?,configuration=?,enabled=coalesce(?,enabled),priority=?,revision=revision+1,updated_at=? WHERE id=?").run(storedName, configuration, patch.enabled == null ? null : Number(patch.enabled), patch.priority ?? existing.priority, this.clock(), id);
       if (patch.capabilities) this.setCapabilities(id, patch.capabilities);
       this.sql("DELETE FROM ResolutionCache WHERE source_id=?").run(id);
     })();
   }
   removeSource(id) { this.sql("DELETE FROM Sources WHERE id=?").run(id); this.revision++; }
-  createCollection({ id = crypto.randomBytes(24).toString("hex"), name, sourceIds, profile }) {
+  customer(id) {
+    const customer = this.sql("SELECT id FROM Customers WHERE id=? AND enabled=1").get(id);
+    if (!customer) throw Object.assign(new Error("Customer account is unavailable"), { status: 401 });
+    return customer;
+  }
+  customerSources(customerId, sourceIds) {
+    this.customer(customerId);
+    if (!Array.isArray(sourceIds) || !sourceIds.length || sourceIds.length > 32 || sourceIds.some(id => typeof id !== "string")) throw Object.assign(new Error("Select 1-32 owned sources"), { status: 400 });
+    const count = this.sql("SELECT count(*) n FROM CustomerSources o JOIN Sources s ON s.id=o.source_id WHERE o.customer_id=? AND s.enabled=1 AND o.source_id IN (SELECT value FROM json_each(?))").get(customerId, JSON.stringify(sourceIds)).n;
+    if (count !== new Set(sourceIds).size) throw Object.assign(new Error("Source is unavailable or outside this account"), { status: 404 });
+  }
+  createCollection({ id = crypto.randomBytes(24).toString("hex"), name, sourceIds, profile, customerId }) {
     this.db.transaction(() => {
-      this.sql("INSERT INTO Collections VALUES(?,?,?)").run(id, name, this.clock());
+      if (customerId) {
+        this.customerSources(customerId, sourceIds);
+        if (this.sql("SELECT count(*) n FROM CustomerCollections WHERE customer_id=?").get(customerId).n >= 64) throw Object.assign(new Error("Maximum 64 libraries per account"), { status: 409 });
+      }
+      const storedName = this.customerLabel(customerId, "collection-name", id, name);
+      const storedProfile = this.customerLabel(customerId, "collection-profile", id, playbackProfile(profile));
+      this.sql("INSERT INTO Collections VALUES(?,?,?)").run(id, storedName, this.clock());
       this.sql("INSERT INTO CollectionRevisions(collection_id) VALUES(?)").run(id);
-      this.sql("INSERT INTO CollectionProfiles VALUES(?,?)").run(id, JSON.stringify(playbackProfile(profile)));
+      this.sql("INSERT INTO CollectionProfiles VALUES(?,?)").run(id, customerId ? storedProfile : JSON.stringify(storedProfile));
       for (const sourceId of new Set(sourceIds)) this.sql("INSERT INTO CollectionSources VALUES(?,?)").run(id, sourceId);
+      if (customerId) this.sql("INSERT INTO CustomerCollections VALUES(?,?)").run(id, customerId);
     })();
     return this.collection(id);
   }
   collection(id) {
+    if (this.sql("SELECT 1 FROM CustomerCollections o JOIN Customers c ON c.id=o.customer_id WHERE o.collection_id=? AND c.enabled=0").get(id)) return null;
     const row = this.sql("SELECT c.*,r.revision,p.profile FROM Collections c JOIN CollectionRevisions r ON r.collection_id=c.id JOIN CollectionProfiles p ON p.collection_id=c.id WHERE c.id=?").get(id);
-    return row ? { id: row.id, name: row.name, revision: row.revision, profile: playbackProfile(JSON.parse(row.profile)), createdAt: row.created_at, sourceIds: this.sql("SELECT cs.source_id FROM CollectionSources cs JOIN Sources s ON s.id=cs.source_id WHERE cs.collection_id=? AND s.enabled=1 ORDER BY s.priority DESC,s.id").all(id).map((r) => r.source_id) } : null;
+    const owner = this.sql("SELECT customer_id FROM CustomerCollections WHERE collection_id=?").get(id)?.customer_id;
+    const name = row && this.openCustomerLabel(owner, "collection-name", id, row.name);
+    const profile = row && this.openCustomerLabel(owner, "collection-profile", id, row.profile);
+    return row ? { id: row.id, name, revision: row.revision, profile: playbackProfile(owner ? profile : JSON.parse(profile)), createdAt: row.created_at, sourceIds: this.sql(`SELECT cs.source_id FROM CollectionSources cs JOIN Sources s ON s.id=cs.source_id
+      LEFT JOIN CustomerSources owner ON owner.source_id=s.id LEFT JOIN Customers customer ON customer.id=owner.customer_id
+      WHERE cs.collection_id=? AND s.enabled=1 AND coalesce(customer.enabled,1)=1 ORDER BY s.priority DESC,s.id`).all(id).map((r) => r.source_id) } : null;
   }
   updateCollection(id, { name, sourceIds, revision, profile }) {
     this.db.transaction(() => {
       const current = this.collection(id);
       if (!current) throw Object.assign(new Error("Library not found"), { status: 404 });
       if (revision !== current.revision) throw Object.assign(new Error("Library changed. Reload before saving."), { status: 409 });
-      this.sql("UPDATE Collections SET name=? WHERE id=?").run(name, id);
-      this.sql("UPDATE CollectionProfiles SET profile=? WHERE collection_id=?").run(JSON.stringify(playbackProfile(profile || current.profile)), id);
+      const owner = this.sql("SELECT customer_id FROM CustomerCollections WHERE collection_id=?").get(id);
+      if (owner) this.customerSources(owner.customer_id, sourceIds);
+      this.sql("UPDATE Collections SET name=? WHERE id=?").run(this.customerLabel(owner?.customer_id, "collection-name", id, name), id);
+      const normalizedProfile = playbackProfile(profile || current.profile);
+      this.sql("UPDATE CollectionProfiles SET profile=? WHERE collection_id=?").run(owner ? this.customerLabel(owner.customer_id, "collection-profile", id, normalizedProfile) : JSON.stringify(normalizedProfile), id);
       this.sql("DELETE FROM CollectionSources WHERE collection_id=?").run(id);
       for (const sourceId of new Set(sourceIds)) this.sql("INSERT INTO CollectionSources VALUES(?,?)").run(id, sourceId);
       this.sql("UPDATE CollectionRevisions SET revision=revision+1 WHERE collection_id=?").run(id);
     })();
     return this.collection(id);
+  }
+  renameCollection(id, name) {
+    const owner = this.sql("SELECT customer_id FROM CustomerCollections WHERE collection_id=?").get(id)?.customer_id;
+    this.sql("UPDATE Collections SET name=? WHERE id=?").run(this.customerLabel(owner, "collection-name", id, name), id);
   }
   canonicalRow(id) {
     let row = this.sql(typeof id === "number" ? "SELECT * FROM MediaItems WHERE id=?" : "SELECT * FROM MediaItems WHERE canonical_id=?").get(id);
@@ -164,10 +258,14 @@ class MediaGraph {
     assignments.push("metadata_priority=?", "updated_at=?"); values.push(Math.max(source.priority, target.metadata_priority), now, target.id);
     this.sql(`UPDATE MediaItems SET ${assignments.join(",")} WHERE id=?`).run(...values);
     for (const [namespace, value] of Object.entries(input.externalIDs)) this.sql("INSERT INTO ExternalIDs VALUES(?,?,?,?) ON CONFLICT DO NOTHING").run(namespace, input.type, value, target.id);
-    this.sql("INSERT INTO SourceMappings VALUES(?,?,?,?,?,1,?,?) ON CONFLICT(source_id,source_type,source_key) DO UPDATE SET media_id=excluded.media_id,resolver_data=excluded.resolver_data,active=1,seen_generation=excluded.seen_generation,updated_at=excluded.updated_at").run(sourceId, input.sourceType, input.sourceKey, target.id, this.secrets.seal(input.resolverData || {}), generation, now);
+    this.sql("INSERT INTO SourceMappings VALUES(?,?,?,?,?,1,?,?) ON CONFLICT(source_id,source_type,source_key) DO UPDATE SET media_id=excluded.media_id,resolver_data=excluded.resolver_data,active=1,seen_generation=excluded.seen_generation,updated_at=excluded.updated_at").run(sourceId, input.sourceType, input.sourceKey, target.id, this.sourceSeal(sourceId, "source-mapping", [input.sourceType, input.sourceKey], input.resolverData || {}), generation, now);
     const metadata = Object.fromEntries(["type", "title", "originalTitle", "year", "description", "genres", "runtimeSeconds", "rating", "certification", "releaseDate", "externalIDs"].filter((field) => input[field] !== undefined).map((field) => [field, input[field]]));
     this.sql("INSERT INTO Metadata VALUES(?,?,?,?) ON CONFLICT(media_id,source_id) DO UPDATE SET document=excluded.document,updated_at=excluded.updated_at").run(target.id, sourceId, JSON.stringify(metadata), now);
-    for (const [kind, resource] of Object.entries(input.artwork || {})) if (["poster", "backdrop", "logo", "thumbnail"].includes(kind) && resource) this.sql("INSERT INTO Artwork(media_id,source_id,kind,resource) VALUES(?,?,?,?) ON CONFLICT(media_id,source_id,kind) DO UPDATE SET resource=excluded.resource").run(target.id, sourceId, kind, this.secrets.seal(resource));
+    for (const [kind, resource] of Object.entries(input.artwork || {})) if (["poster", "backdrop", "logo", "thumbnail"].includes(kind) && resource) {
+      // The existing artwork primary key survives canonical merges and VACUUM.
+      const row = this.sql("INSERT INTO Artwork(media_id,source_id,kind,resource) VALUES(?,?,?,'pending-encryption') ON CONFLICT(media_id,source_id,kind) DO UPDATE SET resource=excluded.resource RETURNING id").get(target.id, sourceId, kind);
+      this.sql("UPDATE Artwork SET resource=? WHERE id=?").run(this.sourceSeal(sourceId, "artwork", [row.id, kind], resource), row.id);
+    }
     require("./categories").replace(this, sourceId, input, target.id, catalogKey, generation);
     if (input.type === "movie") this.sql("INSERT OR IGNORE INTO Movies VALUES(?)").run(target.id);
     if (input.type === "series") this.sql("INSERT OR IGNORE INTO Series VALUES(?)").run(target.id);
@@ -220,6 +318,18 @@ class MediaGraph {
     }
     this.sql("UPDATE SourceMappings SET media_id=? WHERE media_id=?").run(keep.id, remove.id);
     this.sql("UPDATE SyntheticIDs SET media_id=? WHERE media_id=?").run(keep.id, remove.id);
+    // Preserve the most recent user choices when reliable identities converge.
+    this.sql(`INSERT INTO OutputUserData(collection_id,protocol,media_id,position_ticks,played,favorite,play_count,last_played,updated_at)
+      SELECT collection_id,protocol,?,position_ticks,played,favorite,play_count,last_played,updated_at FROM OutputUserData WHERE media_id=?
+      ON CONFLICT(collection_id,protocol,media_id) DO UPDATE SET
+        position_ticks=CASE WHEN excluded.updated_at>OutputUserData.updated_at THEN excluded.position_ticks ELSE OutputUserData.position_ticks END,
+        played=CASE WHEN excluded.updated_at>OutputUserData.updated_at THEN excluded.played ELSE OutputUserData.played END,
+        favorite=CASE WHEN excluded.updated_at>OutputUserData.updated_at THEN excluded.favorite ELSE OutputUserData.favorite END,
+        play_count=OutputUserData.play_count+excluded.play_count,
+        last_played=NULLIF(max(coalesce(OutputUserData.last_played,0),coalesce(excluded.last_played,0)),0),
+        updated_at=max(OutputUserData.updated_at,excluded.updated_at)`).run(keep.id, remove.id);
+    this.sql("DELETE FROM OutputUserData WHERE media_id=?").run(remove.id);
+    this.sql("UPDATE OutputPlays SET media_id=? WHERE media_id=?").run(keep.id, remove.id);
     this.sql("DELETE FROM ResolutionCache WHERE media_id IN (?,?)").run(keep.id, remove.id);
     const subtype = { movie: "Movies", series: "Series", season: "Seasons", episode: "Episodes", channel: "Channels", event: "LiveEvents" }[remove.type];
     if (remove.type === "channel") { this.sql("UPDATE OR IGNORE EPGEvents SET channel_id=? WHERE channel_id=?").run(keep.id, remove.id); this.sql("DELETE FROM EPGEvents WHERE channel_id=?").run(remove.id); this.sql("UPDATE LiveEvents SET channel_id=? WHERE channel_id=?").run(keep.id, remove.id); }
@@ -237,30 +347,41 @@ class MediaGraph {
     if (row.type === "channel") result.channel = this.sql("SELECT number,epg_id AS epgId,catchup_days AS catchupDays,timeshift_seconds AS timeshiftSeconds FROM Channels WHERE media_id=?").get(row.id);
     return result;
   }
-  page({ types = ["movie", "series", "channel", "event"], sourceIds, after = 0, offset = 0, limit = 100, search = "", seriesId, categoryId } = {}) {
-    if (!Array.isArray(sourceIds) || !sourceIds.length) return [];
+  _pageQuery({ types = ["movie", "series", "channel", "event"], sourceIds, after = 0, offset = 0, limit = 100, search = "", seriesId, seasonId, categoryId } = {}) {
+    if (!Array.isArray(sourceIds) || !sourceIds.length) return null;
     const clauses = ["m.merged_into IS NULL", "m.id > @after", "m.type IN (SELECT value FROM json_each(@types))", "EXISTS(SELECT 1 FROM SourceMappings sm JOIN Sources s ON s.id=sm.source_id WHERE sm.media_id=m.id AND sm.active=1 AND s.enabled=1 AND s.id IN (SELECT value FROM json_each(@sources)))"];
     const params = { after, types: JSON.stringify(types), sources: JSON.stringify(sourceIds), limit: Math.max(1, Math.min(1000, limit)), offset: Math.max(0, offset) };
     if (categoryId != null) {
-      if (!Number.isSafeInteger(categoryId) || categoryId < 0) return [];
+      if (!Number.isSafeInteger(categoryId) || categoryId < 0) return null;
       const membership = "SELECT mc.media_id FROM MediaCategories mc JOIN Categories c ON c.id=mc.category_id JOIN SourceMappings cm ON cm.media_id=mc.media_id AND cm.source_id=c.source_id JOIN Sources cs ON cs.id=c.source_id WHERE cm.active=1 AND cs.enabled=1 AND c.source_id IN (SELECT value FROM json_each(@sources))";
       if (categoryId === 0) clauses.push(`m.id NOT IN (${membership})`);
       else { clauses.push(`m.id IN (${membership} AND mc.category_id=@categoryId)`); params.categoryId = categoryId; }
     }
     if (seriesId) { clauses.push("m.id IN (SELECT media_id FROM Episodes WHERE series_id=@seriesId UNION SELECT media_id FROM Seasons WHERE series_id=@seriesId)"); params.seriesId = seriesId; }
+    if (seasonId) { clauses.push("m.id IN (SELECT media_id FROM Episodes WHERE season_id=@seasonId)"); params.seasonId = seasonId; }
     if (search.trim()) {
       const tokens = search.match(/[\p{L}\p{N}]+/gu) || [];
-      if (!tokens.length) return [];
+      if (!tokens.length) return null;
       clauses.push(`m.id IN (SELECT md.media_id FROM SourceMediaSearch JOIN Metadata md ON md.rowid=SourceMediaSearch.rowid JOIN Sources ss ON ss.id=md.source_id
         WHERE SourceMediaSearch MATCH @query AND ss.enabled=1 AND ss.id IN (SELECT value FROM json_each(@sources))
         AND EXISTS(SELECT 1 FROM SourceMappings sm WHERE sm.media_id=md.media_id AND sm.source_id=md.source_id AND sm.active=1))`);
       params.query = tokens.slice(0, 20).map(token => `"${token}"*`).join(" AND ");
     }
-    return this.sql(`SELECT m.id FROM MediaItems m WHERE ${clauses.join(" AND ")} ORDER BY m.id LIMIT @limit OFFSET @offset`).all(params).map((row) => this.media(row.id));
+    return { where: clauses.join(" AND "), params };
+  }
+  page(options = {}) {
+    const query = this._pageQuery(options);
+    if (!query) return [];
+    const order = { episode: "(SELECT season_number FROM Episodes WHERE media_id=m.id),(SELECT number FROM Episodes WHERE media_id=m.id),m.id", season: "(SELECT number FROM Seasons WHERE media_id=m.id),m.id" }[options.order] || "m.id";
+    return this.sql(`SELECT m.id FROM MediaItems m WHERE ${query.where} ORDER BY ${order} LIMIT @limit OFFSET @offset`).all(query.params).map((row) => this.media(row.id));
+  }
+  count(options = {}) {
+    const query = this._pageQuery({ ...options, after: 0 });
+    return query ? this.sql(`SELECT count(*) AS total FROM MediaItems m WHERE ${query.where}`).get(query.params).total : 0;
   }
   mappings(mediaId, sourceIds) {
     if (!sourceIds?.length) return [];
-    return this.sql("SELECT sm.*,s.priority,s.revision FROM SourceMappings sm JOIN Sources s ON s.id=sm.source_id WHERE sm.media_id=? AND sm.active=1 AND s.enabled=1 AND sm.source_id IN (SELECT value FROM json_each(?)) ORDER BY s.priority DESC,sm.source_id").all(mediaId, JSON.stringify(sourceIds)).map((row) => ({ sourceId: row.source_id, sourceType: row.source_type, sourceKey: row.source_key, resolverData: this.secrets.open(row.resolver_data), priority: row.priority, revision: row.revision }));
+    return this.sql("SELECT sm.*,s.priority,s.revision FROM SourceMappings sm JOIN Sources s ON s.id=sm.source_id WHERE sm.media_id=? AND sm.active=1 AND s.enabled=1 AND sm.source_id IN (SELECT value FROM json_each(?)) ORDER BY s.priority DESC,sm.source_id").all(mediaId, JSON.stringify(sourceIds)).map((row) => ({ sourceId: row.source_id, sourceType: row.source_type, sourceKey: row.source_key, resolverData: this.sourceOpen(row.source_id, "source-mapping", [row.source_type, row.source_key], row.resolver_data), priority: row.priority, revision: row.revision }));
   }
   synthetic(protocol, mediaId) {
     return this.db.transaction(() => {
@@ -272,10 +393,10 @@ class MediaGraph {
   }
   fromSynthetic(protocol, id) { const row = this.sql("SELECT media_id FROM SyntheticIDs WHERE protocol=? AND id=?").get(protocol, id); return row ? this.media(row.media_id) : null; }
   artwork(mediaId, sourceIds) {
-    const rows = this.sql("SELECT a.kind,a.resource,a.source_id FROM Artwork a JOIN Sources s ON s.id=a.source_id WHERE a.media_id=? AND s.enabled=1 AND a.source_id IN (SELECT value FROM json_each(?)) ORDER BY s.priority DESC,a.id").all(mediaId, JSON.stringify(sourceIds));
+    const rows = this.sql("SELECT a.id,a.kind,a.resource,a.source_id FROM Artwork a JOIN Sources s ON s.id=a.source_id WHERE a.media_id=? AND s.enabled=1 AND a.source_id IN (SELECT value FROM json_each(?)) ORDER BY s.priority DESC,a.id").all(mediaId, JSON.stringify(sourceIds));
     const result = {};
     for (const row of rows) {
-      const resource = this.secrets.open(row.resource);
+      const resource = this.sourceOpen(row.source_id, "artwork", [row.id, row.kind], row.resource);
       result[row.kind] ||= { sourceId: row.source_id, resource: typeof resource === "string" ? { url: resource } : resource };
     }
     return result;

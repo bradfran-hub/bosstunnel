@@ -113,6 +113,7 @@ CREATE TABLE IF NOT EXISTS EPGEvents (
   CHECK(ends_at > starts_at)
 );
 CREATE INDEX IF NOT EXISTS EPGEvents_schedule ON EPGEvents(channel_id,starts_at,ends_at);
+CREATE INDEX IF NOT EXISTS EPGEvents_source_schedule ON EPGEvents(source_id,starts_at,channel_id,ends_at);
 CREATE TABLE IF NOT EXISTS SourceMappings (
   source_id TEXT NOT NULL REFERENCES Sources(id) ON DELETE CASCADE,
   source_type TEXT NOT NULL,
@@ -254,7 +255,108 @@ CREATE TRIGGER IF NOT EXISTS SourceMediaSearch_update AFTER UPDATE OF document O
   INSERT INTO SourceMediaSearch(SourceMediaSearch,rowid,title,original_title) VALUES('delete',old.rowid,json_extract(old.document,'$.title'),json_extract(old.document,'$.originalTitle'));
   INSERT INTO SourceMediaSearch(rowid,title,original_title) VALUES(new.rowid,json_extract(new.document,'$.title'),json_extract(new.document,'$.originalTitle'));
 END;
-PRAGMA user_version=10;
+PRAGMA user_version=16;
+CREATE TABLE IF NOT EXISTS Customers (
+  id TEXT PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE CHECK(length(username)=64),
+  encrypted_profile TEXT NOT NULL,
+  password_hash TEXT NOT NULL,
+  recovery_hash TEXT NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 1,
+  enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN(0,1)),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS CustomerSessions (
+  token_hash TEXT PRIMARY KEY,
+  customer_id TEXT NOT NULL REFERENCES Customers(id) ON DELETE CASCADE,
+  customer_revision INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS CustomerVaults (
+  customer_id TEXT PRIMARY KEY REFERENCES Customers(id) ON DELETE CASCADE,
+  wrapper TEXT NOT NULL CHECK(json_valid(wrapper)),
+  revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>0),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS CustomerSessions_customer ON CustomerSessions(customer_id,expires_at);
+CREATE INDEX IF NOT EXISTS CustomerSessions_expiry ON CustomerSessions(expires_at);
+CREATE TABLE IF NOT EXISTS CustomerSources (
+  source_id TEXT PRIMARY KEY REFERENCES Sources(id) ON DELETE CASCADE,
+  customer_id TEXT NOT NULL REFERENCES Customers(id)
+);
+CREATE INDEX IF NOT EXISTS CustomerSources_customer ON CustomerSources(customer_id,source_id);
+CREATE TABLE IF NOT EXISTS CustomerCollections (
+  collection_id TEXT PRIMARY KEY REFERENCES Collections(id) ON DELETE CASCADE,
+  customer_id TEXT NOT NULL REFERENCES Customers(id)
+);
+CREATE INDEX IF NOT EXISTS CustomerCollections_customer ON CustomerCollections(customer_id,collection_id);
+CREATE TABLE IF NOT EXISTS CustomerOutputLinks (
+  collection_id TEXT PRIMARY KEY REFERENCES CustomerCollections(collection_id) ON DELETE CASCADE,
+  customer_id TEXT NOT NULL REFERENCES Customers(id) ON DELETE CASCADE,
+  customer_revision INTEGER NOT NULL,
+  token_hash TEXT NOT NULL UNIQUE CHECK(length(token_hash)=64),
+  password_hash TEXT NOT NULL CHECK(length(password_hash)=64),
+  encrypted_credentials TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS CustomerAuthAttempts (
+  bucket TEXT PRIMARY KEY,
+  hits INTEGER NOT NULL,
+  reset_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS CustomerAuthAttempts_expiry ON CustomerAuthAttempts(reset_at);
+CREATE TABLE IF NOT EXISTS OutputAccounts (
+  collection_id TEXT NOT NULL REFERENCES Collections(id) ON DELETE CASCADE,
+  protocol TEXT NOT NULL,
+  username TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  password_hash TEXT NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY(collection_id,protocol),
+  UNIQUE(protocol,username),
+  UNIQUE(protocol,user_id)
+);
+CREATE TABLE IF NOT EXISTS OutputSessions (
+  token_hash TEXT PRIMARY KEY,
+  collection_id TEXT NOT NULL,
+  protocol TEXT NOT NULL,
+  account_revision INTEGER NOT NULL,
+  collection_revision INTEGER NOT NULL,
+  device_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  FOREIGN KEY(collection_id,protocol) REFERENCES OutputAccounts(collection_id,protocol) ON DELETE CASCADE,
+  UNIQUE(collection_id,protocol,device_id)
+);
+CREATE INDEX IF NOT EXISTS OutputSessions_expiry ON OutputSessions(expires_at);
+CREATE TABLE IF NOT EXISTS OutputUserData (
+  collection_id TEXT NOT NULL,
+  protocol TEXT NOT NULL,
+  media_id INTEGER NOT NULL REFERENCES MediaItems(id),
+  position_ticks INTEGER NOT NULL DEFAULT 0 CHECK(position_ticks>=0),
+  played INTEGER NOT NULL DEFAULT 0 CHECK(played IN (0,1)),
+  favorite INTEGER NOT NULL DEFAULT 0 CHECK(favorite IN (0,1)),
+  play_count INTEGER NOT NULL DEFAULT 0 CHECK(play_count>=0),
+  last_played INTEGER,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY(collection_id,protocol,media_id),
+  FOREIGN KEY(collection_id,protocol) REFERENCES OutputAccounts(collection_id,protocol) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS OutputPlays (
+  id TEXT PRIMARY KEY,
+  token_hash TEXT NOT NULL REFERENCES OutputSessions(token_hash) ON DELETE CASCADE,
+  media_id INTEGER NOT NULL REFERENCES MediaItems(id),
+  started INTEGER NOT NULL DEFAULT 0 CHECK(started IN (0,1)),
+  resource_data TEXT NOT NULL,
+  updated_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS OutputPlays_session ON OutputPlays(token_hash,expires_at);
+CREATE INDEX IF NOT EXISTS OutputPlays_expiry ON OutputPlays(expires_at);
 CREATE TABLE IF NOT EXISTS PlaybackEvidence (
   fingerprint TEXT PRIMARY KEY,
   source_id TEXT NOT NULL REFERENCES Sources(id) ON DELETE CASCADE,

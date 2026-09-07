@@ -2,6 +2,7 @@
 const { JSONParser } = require("@streamparser/json");
 const sax = require("sax");
 const { httpMedia } = require("../stream-policy");
+const { networkFetch: fetch } = require("../core/network");
 
 async function request(url, options = {}) {
   if (!httpMedia(String(url))) throw new Error("Unsupported source URL");

@@ -46,7 +46,7 @@ class CatalogueIngestor {
                 if (itemError.code !== "IDENTITY_CONFLICT") throw itemError;
                 if (this.graph.sql("SELECT count(*) n FROM IdentityReviews WHERE source_id=?").get(sourceId).n >= 10000) throw new Error("Identity review queue is full");
                 this.graph.sql(`INSERT INTO IdentityReviews(source_id,catalog_key,source_type,source_key,encrypted_input,updated_at) VALUES(?,?,?,?,?,?)
-                  ON CONFLICT(source_id,catalog_key,source_type,source_key) DO UPDATE SET encrypted_input=excluded.encrypted_input,updated_at=excluded.updated_at`).run(sourceId, catalog.key, input.sourceType || input.type, String(input.sourceKey), this.graph.secrets.seal(input), this.graph.clock());
+                  ON CONFLICT(source_id,catalog_key,source_type,source_key) DO UPDATE SET encrypted_input=excluded.encrypted_input,updated_at=excluded.updated_at`).run(sourceId, catalog.key, input.sourceType || input.type, String(input.sourceKey), this.graph.sourceSeal(sourceId, "quarantine", [catalog.key, input.sourceType || input.type, String(input.sourceKey)], input), this.graph.clock());
               }
             }
           }

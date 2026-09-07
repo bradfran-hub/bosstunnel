@@ -2,6 +2,9 @@
 async function* idleBody(body, controller, idleMs = 60000) {
   if (!Number.isSafeInteger(idleMs) || idleMs < 1 || idleMs > 2147483647) throw new Error("Invalid playback idle timeout");
   const reader = body.getReader();
+  const abort = () => { reader.cancel(controller.signal.reason).catch(() => {}); };
+  controller.signal.addEventListener("abort", abort, { once: true });
+  if (controller.signal.aborted) abort();
   try {
     while (true) {
       const timer = setTimeout(() => controller.abort(Object.assign(new Error("Upstream playback stalled"), { code: "UPSTREAM_IDLE_TIMEOUT", status: 504 })), idleMs);
@@ -9,11 +12,13 @@ async function* idleBody(body, controller, idleMs = 60000) {
       try { part = await reader.read(); }
       catch (error) { throw controller.signal.aborted ? controller.signal.reason : error; }
       finally { clearTimeout(timer); }
+      if (controller.signal.aborted) throw controller.signal.reason;
       if (part.done) return;
       // There is no upstream idle timer while downstream backpressure holds this yield.
       yield part.value;
     }
   } finally {
+    controller.signal.removeEventListener("abort", abort);
     await reader.cancel().catch(() => {});
     reader.releaseLock();
   }

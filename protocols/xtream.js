@@ -15,6 +15,7 @@ function createXtreamOutput(library, credentials) {
     yield* library.items({ types: [type], ...(category ? { categoryId: Number(category) - 1 } : {}) });
   }
   async function* render(params) {
+    library.collection;
     const action = params.get("action") || "";
     if (!action || action === "get_account_info") {
       const url = new URL(credentials.server);
@@ -22,9 +23,13 @@ function createXtreamOutput(library, credentials) {
     }
     const kind = { get_live_categories: "channel", get_vod_categories: "movie", get_series_categories: "series" }[action];
     if (kind) {
-      const rows = library.graph.sql("SELECT c.id,c.name,s.name AS source_name,s.protocol FROM Categories c JOIN Sources s ON s.id=c.source_id WHERE c.kind=? AND c.source_id IN (SELECT value FROM json_each(?)) AND EXISTS(SELECT 1 FROM MediaCategories mc JOIN SourceMappings sm ON sm.media_id=mc.media_id AND sm.source_id=c.source_id WHERE mc.category_id=c.id AND sm.active=1) ORDER BY c.id").iterate(kind, JSON.stringify(library.collection.sourceIds));
+      const rows = library.graph.sql("SELECT c.id,c.name,c.source_id,s.protocol FROM Categories c JOIN Sources s ON s.id=c.source_id WHERE c.kind=? AND c.source_id IN (SELECT value FROM json_each(?)) AND EXISTS(SELECT 1 FROM MediaCategories mc JOIN SourceMappings sm ON sm.media_id=mc.media_id AND sm.source_id=c.source_id WHERE mc.category_id=c.id AND sm.active=1) ORDER BY c.id").iterate(kind, JSON.stringify(library.collection.sourceIds));
       yield '[{"category_id":"1","category_name":"Boss Media","parent_id":0}';
-      for (const row of rows) yield `,${JSON.stringify({ category_id: String(row.id + 1), category_name: ["other", "catalogue", "boss"].includes(row.protocol) ? `${row.source_name} | ${row.name}` : row.name, parent_id: 0 })}`;
+      for (const row of rows) {
+        library.collection;
+        const sourceName = library.graph.source(row.source_id).name;
+        yield `,${JSON.stringify({ category_id: String(row.id + 1), category_name: ["other", "catalogue", "boss"].includes(row.protocol) ? `${sourceName} | ${row.name}` : row.name, parent_id: 0 })}`;
+      }
       yield "]"; return;
     }
     if (["get_live_streams", "get_vod_streams", "get_series"].includes(action)) {

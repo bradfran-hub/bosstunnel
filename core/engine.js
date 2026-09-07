@@ -3,7 +3,7 @@ const { MediaGraph } = require("./graph");
 const { SourceRegistry } = require("./registry");
 const { CatalogueIngestor } = require("./ingestion");
 const { ResolverEngine } = require("./resolver");
-const { createCaches } = require("./cache");
+const { createCaches, sourceCaches } = require("./cache");
 const { createAddonSource } = require("../sources/addon");
 const { createMediaServerSource } = require("../sources/media-server");
 const { createXtreamSource } = require("../sources/xtream");
@@ -18,16 +18,16 @@ class MediaEngine {
     this.graph = new MediaGraph(databaseFile, options);
     this.caches = createCaches();
     this.registry = new SourceRegistry(this.graph);
-    this.registry.register("other", (source) => createAddonSource(source, { caches: this.caches }));
+    this.registry.register("other", (source) => createAddonSource(source, { caches: sourceCaches(this.graph, source.id, this.caches) }));
     this.registry.register("jellyfin", createMediaServerSource);
     this.registry.register("emby", createMediaServerSource);
     this.registry.register("xtream", createXtreamSource);
     this.registry.register("m3u", createM3uSource);
-    this.registry.register("webdav", source => createWebDavSource(source, { caches: this.caches }));
+    this.registry.register("webdav", source => createWebDavSource(source, { caches: sourceCaches(this.graph, source.id, this.caches) }));
     this.registry.register("plex", createPlexSource);
     this.registry.register("boss", createBossSource);
     this.registry.register("catalogue", async (source) => {
-      const adapter = await createAddonSource(source, { caches: this.caches });
+      const adapter = await createAddonSource(source, { caches: sourceCaches(this.graph, source.id, this.caches) });
       return { ...adapter, capabilities: require("./model").capabilities({ ...adapter.capabilities, streams: false, subtitles: false, catchup: false, timeshift: false, identityNamespaces: [] }) };
     });
     this.ingestor = new CatalogueIngestor(this.graph, this.registry);
@@ -48,10 +48,13 @@ class MediaEngine {
   }
   ingestSource(id, options = {}) {
     this.shutdown.signal.throwIfAborted();
+    try { this.graph.sourceAccess(id)?.assertCurrent(); }
+    catch (error) { return Promise.reject(error); }
     if (!this.sourceTasks.has(id)) this.sourceTasks.set(id, this.runSource(id, options).finally(() => this.sourceTasks.delete(id)));
     return this.sourceTasks.get(id);
   }
   async runSource(id, { refresh = false, indexEpisodes = true } = {}) {
+    this.graph.sourceAccess(id)?.assertCurrent();
     const state = (status, phase, error = null) => {
       if (this.graph.source(id)) this.graph.sql("INSERT INTO SourceSync VALUES(?,?,?,?,?) ON CONFLICT(source_id) DO UPDATE SET status=excluded.status,phase=excluded.phase,error_code=excluded.error_code,updated_at=excluded.updated_at").run(id, status, phase, error, this.graph.clock());
     };
@@ -154,10 +157,11 @@ class MediaEngine {
       if (!source?.enabled || !source.capabilities.search) continue;
       const key = `${sourceId}:${source.revision}:search:${JSON.stringify([query, context.types || []])}`;
       if (!this.searchRequests.has(key)) {
+        const cache = sourceCaches(this.graph, sourceId, this.caches).sourceResponses;
         const task = this.resolver.limiter.run(async () => {
           const adapter = await this.registry.get(sourceId);
           const signal = AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(15000)]);
-          const state = Object.assign(Object.create(null), structuredClone(this.caches.sourceResponses.get(key) || {}));
+          const state = Object.assign(Object.create(null), structuredClone(cache.get(key) || {}));
           const catalogs = (adapter.catalogs || []).filter((entry) => entry.searchable && (!context.types?.length || context.types.includes(entry.type)));
           if (catalogs.length > 256) throw new Error("Source exceeds 256 searchable catalogues");
           const failed = new Set();
@@ -180,7 +184,7 @@ class MediaEngine {
               progress.cursor = page.nextCursor == null ? null : String(page.nextCursor);
               progress.complete = progress.cursor == null;
               state[catalog.key] = progress;
-              this.caches.sourceResponses.set(key, state, 30000);
+              cache.set(key, state, 30000);
             }
           }
         }).finally(() => this.searchRequests.delete(key));
@@ -193,6 +197,10 @@ class MediaEngine {
     return this.page({ ...context, sourceIds, search: query });
   }
   artwork(mediaId, sourceIds) {
+    const accesses = sourceIds.map(id => this.graph.sourceAccess(id)).filter(Boolean);
+    // Customer artwork can contain provider credentials. Keep it out of the
+    // shared plaintext cache; the database resource is already vault-encrypted.
+    if (accesses.length) return this.graph.artwork(mediaId, sourceIds);
     const key = JSON.stringify([this.graph.revision, mediaId, sourceIds]);
     const hit = this.caches.artwork.get(key);
     if (hit) return structuredClone(hit);
@@ -310,24 +318,24 @@ class MediaEngine {
     return task;
   }
   async loadSubtitles(mediaId, context) {
+    context.signal?.throwIfAborted();
     const media = this.graph.media(mediaId);
     if (!media) throw Object.assign(new Error("Media not found"), { status: 404 });
     const mappings = this.graph.mappings(media.id, context.allowedSourceIds || []);
     if (!mappings.length) throw Object.assign(new Error("Media is outside this library"), { status: 404 });
     const results = [];
     for (const mapping of mappings) {
+      context.signal?.throwIfAborted();
       if (results.length >= 200) break;
       try {
-        const adapter = await this.registry.get(mapping.sourceId);
+        const { abortable } = require("./abortable");
+        const signal = AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(15000), ...(context.signal ? [context.signal] : [])]);
+        const adapter = await abortable(this.registry.get(mapping.sourceId), signal);
         if (!adapter.capabilities.subtitles) continue;
         const entries = await this.resolver.limiter.run(async () => {
-          const signal = AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(15000)]);
           signal.throwIfAborted();
-          let abort;
-          const interrupted = new Promise((_, reject) => { abort = () => reject(new Error("Subtitle lookup interrupted")); signal.addEventListener("abort", abort, { once: true }); });
-          try { return await Promise.race([adapter.subtitles(media, mapping, { media, series: media.seriesId ? this.graph.media(media.seriesId) : undefined, signal }), interrupted]); }
-          finally { signal.removeEventListener("abort", abort); }
-        });
+          return abortable(adapter.subtitles(media, mapping, { media, series: media.seriesId ? this.graph.media(media.seriesId) : undefined, signal }), signal);
+        }, { signal });
         const source = this.graph.source(mapping.sourceId);
         if (!source?.enabled || source.revision !== mapping.revision) continue;
         for (const subtitle of Array.isArray(entries) ? entries.slice(0, 200 - results.length) : []) {
@@ -335,7 +343,7 @@ class MediaEngine {
           if (!httpMedia(resource.url)) continue;
           results.push({ id: `${mapping.sourceId}:${String(subtitle.id || results.length)}`, language: subtitle.language || "und", resource, sourceId: mapping.sourceId, sourceRevision: source.revision });
         }
-      } catch { this.shutdown.signal.throwIfAborted(); }
+      } catch { this.shutdown.signal.throwIfAborted(); context.signal?.throwIfAborted(); }
     }
     return results;
   }
