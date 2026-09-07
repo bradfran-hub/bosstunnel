@@ -17,7 +17,8 @@ The administrator workspace remains at `/admin`; customers use `/workspace`.
 
 - Usernames are case-insensitive, 3-32 ASCII letters, digits, dots, underscores
   or hyphens, beginning with a letter or digit.
-- New passwords are 15-128 characters, stored with a unique salt and scrypt
+- New passwords are 8-128 characters with at least one number and one special
+  character, stored with a unique salt and scrypt
   (`N=131072`, `r=8`, `p=1`). A bounded single-worker queue limits hashing memory.
 - Random sessions expire after seven days, with at most 16 sessions per account.
   Only session digests are stored. Cookies are HttpOnly, SameSite=Strict and scoped

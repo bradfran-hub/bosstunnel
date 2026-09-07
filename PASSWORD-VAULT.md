@@ -60,7 +60,8 @@ privacy are covered by the release suite and production-copy migration drill.
 
 ## Implemented Primitive
 
-`core/password-vault.js` uses Node crypto's scrypt and AES-256-GCM. A fresh random
+Customer passwords require 8-128 characters with at least one number and one
+special character. `core/password-vault.js` uses Node crypto's scrypt and AES-256-GCM. A fresh random
 32-byte data key is wrapped by a password-derived 32-byte key using an independent
 16-byte salt, scrypt N=131072/r=8/p=1, a random 12-byte nonce and 16-byte GCM tag.
 The stored authentication hash is never used as a decryption key. The module has
