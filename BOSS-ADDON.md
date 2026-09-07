@@ -8,7 +8,7 @@ Player-visible descriptive metadata is selected from active sources in the conne
 
 `GET /bossmedia/a/{library}/addon.boss`
 
-The response uses `Content-Disposition: attachment; filename="addon.boss"`. The App SDK accepts hosted links with `BossClient.fromAddon(url)` and local File/Blob, UTF-8 bytes or text with `BossClient.fromFile(file, { trustedOrigin, token, signal })`. Imports are limited to 8 MiB. The application must obtain explicit trust for the origin before supplying credentials; do not automatically trust a host named in an imported file. Resource URLs must stay on that origin. Files contain data only, not scripts or media. Keep private access links confidential.
+The response uses `Content-Disposition: attachment; filename="addon.boss"`. The App SDK accepts hosted links with `BossClient.fromAddon(url)` and local File/Blob, UTF-8 bytes or text with `BossClient.fromFile(file, { trustedOrigin, token, signal })`. Imports are limited to 8 MiB. The application must obtain explicit trust for the origin before supplying credentials; do not automatically trust a host named in an imported file. API endpoint templates in the descriptor's `resources` object must stay on that origin. This rule does NOT restrict playback, subtitle or artwork URLs returned inside API responses to the BOSS origin: those are direct upstream resources. Files contain data only, not scripts or media. Keep private access links confidential.
 
 ```json
 {
@@ -72,6 +72,31 @@ This resource contract also applies to the authenticated Xtream `boss_api?action
 Automatic resolves against currently authorized sources and the playback profile, choosing a redirect-compatible candidate. After handoff BOSS cannot observe playback success, decode failure, seeking or upstream HTTP errors, and cannot automatically switch providers. Apps implement bounded retries: on an expired/failed choice request fresh options, offer another compatible choice, and respect upstream 429/Retry-After. Do not retry indefinitely. Catalogue presence is not a playback guarantee. Players must reject non-media responses, torrent payloads and DRM-protected resources; BOSS excludes declared torrent/DRM candidates and torrent URLs but does not inspect direct response bytes. Already-resolved authorized HTTP resources are permitted without acquisition.
 
 ## Direct Playback Integration Checklist
+
+### Separate API Trust From Media Trust
+
+Use the configured addon origin to validate the descriptor's catalogue, media,
+playback lookup, subtitles lookup and guide endpoints. Send addon authentication
+only to those API endpoints. Do not reuse this same-origin API validator on the
+provider URLs returned by playback: direct delivery normally uses another host.
+Rejecting every non-BOSS playback host makes available sources appear missing.
+
+The BOSS protocol permits HTTP and HTTPS upstream media; it does not promise
+that all configured providers support TLS. The reference playbackRequest helper
+accepts either without contacting the provider. Applications may impose stronger
+transport policies, but must show a specific blocked-origin/insecure-transport
+error for each rejected choice, not "no sources". Retain other permitted choices
+when one source is rejected. Any HTTP permission must be explicit and scoped to
+the user's trusted provider; never globally disable TLS validation or trust
+arbitrary local-network destinations. HTTP exposes URLs, headers and media to
+network observers, including any credentials in them.
+
+An HTTPS BOSS Automatic URL may redirect to an HTTP provider. The initial HTTPS
+hop does not secure the final connection. An HTTPS-only app needs a supported
+HTTPS URL from that provider, not a changed URL scheme or restored BOSS proxy.
+For HTTPS resources rejected as "not permitted", check the app's media-origin
+policy separately from its API-origin policy. Never forward BOSS API tokens to
+provider hosts, even when media playback on those hosts is allowed.
 
 - Discover the descriptor through .boss, the authenticated Xtream extension, or M3U discovery. All three BOSS-aware modes expose the same resource contract; ordinary IPTV formats do not gain remote search or arbitrary headers.
 - Fetch categories and follow catalogue cursors; use search offsets for expanded discovery. Fetch series metadata and page episodes using seriesId. Never play a series/season record.
