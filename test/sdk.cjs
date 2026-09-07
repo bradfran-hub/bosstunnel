@@ -3,6 +3,37 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const http = require("node:http");
 
+test("SDK separates trusted API endpoints from mixed HTTP/HTTPS direct media choices", async () => {
+  const { BossClient, playbackRequest } = await import("../public/boss-client.mjs");
+  const requests = [];
+  let base;
+  const upstream = [{ url: "https://cdn.example.invalid/signed.mp4?token=fixture", transport: "http" },
+    { url: "http://provider.example.invalid/live/fixture.ts", transport: "http" }];
+  const server = http.createServer((req, res) => {
+    requests.push(req.url);
+    assert.equal(req.headers.authorization, "Bearer addon-fixture");
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(req.url === "/addon.boss" ? {
+      format: "boss-media-addon", version: 1, resources: { catalogue: `${base}/catalogue`, playback: `${base}/playback/{id}` }
+    } : { resources: upstream }));
+  });
+  await new Promise(resolve => server.listen(0, "0.0.0.0", resolve));
+  base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const client = await BossClient.fromAddon(`${base}/addon.boss`, { token: "addon-fixture" });
+    const result = await client.playback("fixture");
+    assert.equal(result.resources.length, 2, "an HTTP entry must not hide a valid HTTPS choice");
+    for (const resource of result.resources) {
+      const direct = playbackRequest(resource);
+      assert.equal(direct.url, resource.url);
+      assert.deepEqual(direct.headers, {}, "addon authentication never becomes media authentication");
+    }
+    assert.deepEqual(requests, ["/addon.boss", "/playback/fixture"], "the SDK never fetches media");
+    const forbidden = BossClient.connectDescriptor({ resources: { catalogue: `${base}/catalogue`, playback: "https://untrusted.example.invalid/api/{id}" } }, new URL(`${base}/addon.boss`), "addon-fixture");
+    assert.throws(() => forbidden.playback("fixture"), error => error.status === 400);
+  } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+});
+
 test("native hosted and file SDK discovery preserve identity and lazy playback", async () => {
   const { createBossAddon } = await import("../public/boss-addon.mjs");
   const { BossClient } = await import("../public/boss-client.mjs");
