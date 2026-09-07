@@ -200,7 +200,9 @@ async function route(req, res) {
   if (req.method === "OPTIONS") { res.writeHead(204, { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET,HEAD,POST,DELETE,OPTIONS", "Access-Control-Allow-Headers": "Content-Type,X-Boss-Admin,Range" }); return res.end(); }
   if (url.pathname === BASE) { res.writeHead(302, { Location: `${BASE}/` }); return res.end(); }
   if (!url.pathname.startsWith(`${BASE}/`)) throw fail("Not found", 404);
-  const pathname = url.pathname.slice(BASE.length);
+  let pathname = url.pathname.slice(BASE.length);
+  if (pathname.startsWith("/workspace/api/")) pathname = pathname.slice("/workspace".length);
+  if (pathname === "/workspace/healthz") pathname = "/healthz";
   if (pathname === "/healthz") return json(res, 200, { ok: true, name: "bosstunnel", port: PORT, architecture: "canonical-graph" });
   if (pathname.startsWith("/api/")) {
     const peer = req.socket.remoteAddress || "unknown";
