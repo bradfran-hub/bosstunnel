@@ -57,6 +57,7 @@
     if (busy) return;
     mode = value; form.reset(); status("#customer-form-status", "");
     const registering = mode === "register", recovering = mode === "recover";
+    const policy = registering || recovering, pattern = "(?=.*[0-9])(?=.*[^A-Za-z0-9\\s]).{8,128}";
     document.querySelector("#customer-entry-title").textContent = registering ? "Create account" : recovering ? "Recover account" : "Sign in";
     document.querySelector("#customer-password-label").textContent = recovering ? "New password" : "Password";
     document.querySelector("#customer-confirm-field").hidden = !registering && !recovering;
@@ -65,7 +66,8 @@
     document.querySelector("#customer-recovery-field").hidden = !recovering;
     form.elements.recoveryCode.disabled = !recovering; form.elements.recoveryCode.required = recovering;
     form.elements.password.autocomplete = registering || recovering ? "new-password" : "current-password";
-    form.elements.password.minLength = registering || recovering ? 8 : 1;
+    form.elements.password.minLength = policy ? 8 : 1; form.elements.password.pattern = policy ? pattern : ""; form.elements.password.title = policy ? "Use 8-128 characters with at least one number and one special character" : "";
+    form.elements.confirmPassword.minLength = policy ? 8 : 0; form.elements.confirmPassword.pattern = policy ? pattern : ""; form.elements.confirmPassword.title = policy ? "Use 8-128 characters with at least one number and one special character" : "";
     document.querySelector("#customer-submit span").textContent = registering ? "Create account" : recovering ? "Reset to empty account" : "Sign in";
     document.querySelector("#customer-recover").hidden = recovering;
     for (const tab of document.querySelectorAll("[data-account-mode]")) tab.setAttribute("aria-selected", String(tab.dataset.accountMode === mode));

@@ -9,8 +9,8 @@
 <h2 id="customer-entry-title">Sign in</h2>
 <form id="customer-form"><label>Username<input name="username" autocomplete="username" minlength="3" maxlength="32" required></label>
 <label id="customer-recovery-field" hidden>Recovery code<input name="recoveryCode" autocomplete="off" maxlength="128" disabled></label>
-<label><span id="customer-password-label">Password</span><input name="password" type="password" autocomplete="current-password" minlength="8" maxlength="128" pattern="(?=.*[0-9])(?=.*[^A-Za-z0-9\\s]).{8,128}" title="Use 8-128 characters with at least one number and one special character" required></label>
-<label id="customer-confirm-field" hidden>Confirm password<input name="confirmPassword" type="password" autocomplete="new-password" minlength="8" maxlength="128" pattern="(?=.*[0-9])(?=.*[^A-Za-z0-9\\s]).{8,128}" title="Use 8-128 characters with at least one number and one special character" disabled></label>
+<label><span id="customer-password-label">Password</span><input name="password" type="password" autocomplete="current-password" maxlength="128" required></label>
+<label id="customer-confirm-field" hidden>Confirm password<input name="confirmPassword" type="password" autocomplete="new-password" maxlength="128" disabled></label>
 <p id="customer-form-status" role="status" aria-live="polite" hidden></p><button id="customer-submit" type="submit" class="primary"><i data-lucide="log-in"></i><span>Sign in</span></button>
 <button id="customer-recover" type="button" class="text-button">Recover account</button></form>
 </section>
