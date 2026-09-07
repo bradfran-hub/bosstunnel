@@ -7,6 +7,7 @@ Original code and protocol documentation are licensed under [MIT](LICENSE).
 - App integration: https://bosstunnel.com/sdk
 - Addon authors: https://bosstunnel.com/sdk/addons
 - Protocol specification: [BOSS-ADDON.md](BOSS-ADDON.md)
+- Developer MCP: `https://bosstunnel.com/mcp` (Streamable HTTP)
 - App SDK: [public/boss-client.mjs](public/boss-client.mjs)
 - Addon SDK: [public/boss-addon.mjs](public/boss-addon.mjs)
 
@@ -57,6 +58,26 @@ Only trusted administrators should configure sources: private-network source
 access is intentionally supported. Do not expose source creation to strangers.
 
 ## Develop And Test
+
+### Connect A Coding Agent
+
+Add `https://bosstunnel.com/mcp` as a remote Streamable HTTP MCP server in your
+agent's MCP configuration. No BOSS account or admin token is needed. Configuration
+file syntax varies by client; use that client's remote HTTP server option.
+
+The public, stateless MCP provides `boss_docs`, `boss_search_docs` and
+`boss_validate_descriptor`, seven allowlisted documentation resources, and the
+`integrate_boss` prompt for app/addon development. Document reads are paginated.
+Validation is offline and structural, not player certification. Never submit
+private links or source credentials. The MCP cannot access private libraries,
+resolve streams, create sources, modify accounts or execute code.
+
+Browser-origin requests are restricted to the configured public origin; server
+MCP clients normally omit Origin. POST bodies are capped at 32 KiB, document
+chunks at 16000 characters, and requests have a 10-second deadline. Unsupported
+GET/SSE and DELETE requests return 405. No persistent MCP session is stored.
+
+### Run Tests
 
 ```sh
 npm ci

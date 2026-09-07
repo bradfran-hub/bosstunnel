@@ -3,7 +3,7 @@ WORKDIR /app
 COPY --chown=node:node package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --chown=node:node server.js check.cjs backup.cjs playback.js stream-policy.js ecosystem.config.cjs ./
-COPY --chown=node:node LICENSE THIRD-PARTY.md ./
+COPY --chown=node:node LICENSE THIRD-PARTY.md BOSS-ADDON.md ./
 COPY --chown=node:node public ./public
 COPY --chown=node:node core ./core
 COPY --chown=node:node sources ./sources

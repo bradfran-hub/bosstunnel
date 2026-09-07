@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BossTunnel App SDK | Player Integration</title><link rel="icon" href="/bossmedia/icon.svg"><link rel="stylesheet" href="/bossmedia/sdk/styles.css"></head>
-<body><header><a class="brand" href="/bossmedia/"><img src="/bossmedia/icon.svg" width="32" height="32" alt="">BossTunnel</a><nav><a href="#quickstart">Quickstart</a><a href="#search">Search</a><a href="#contract">API contract</a><a href="/bossmedia/sdk/client.mjs" download="boss-client.mjs">Download SDK</a></nav></header>
-<div class="layout"><aside><strong>PLAYER SDK</strong><a href="#overview">Integration model</a><a href="#quickstart">Existing Xtream login</a><a href="#native">Native Boss addon</a><a href="#search">Expanded search</a><a href="#identity">Identity and playback</a><a href="#contract">HTTP contract</a><a href="#security">Security</a><a href="#acceptance">Acceptance checklist</a></aside><main>
+<body><header><a class="brand" href="/bossmedia/"><img src="/bossmedia/icon.svg" width="32" height="32" alt="">BossTunnel</a><nav><a href="#quickstart">Quickstart</a><a href="#search">Search</a><a href="#contract">API contract</a><a href="#mcp">MCP</a><a href="/bossmedia/sdk/client.mjs" download="boss-client.mjs">Download SDK</a></nav></header>
+<div class="layout"><aside><strong>PLAYER SDK</strong><a href="#overview">Integration model</a><a href="#quickstart">Existing Xtream login</a><a href="#native">Native Boss addon</a><a href="#search">Expanded search</a><a href="#identity">Identity and playback</a><a href="#contract">HTTP contract</a><a href="#security">Security</a><a href="#acceptance">Acceptance checklist</a><a href="#source-choices">Playback choices</a><a href="#guide">Programme guide</a><a href="#mcp">Developer MCP</a></aside><main>
 <section id="overview"><p class="eyebrow">Protocol v1 / JavaScript reference client</p><h1>BossTunnel App SDK</h1><p class="lead">Native player integration for combined libraries, remote metadata discovery and on-demand playback.</p><p>For app developers: keep your existing Xtream browser and playback integration. Add the optional Boss extension to search authorized sources for titles that are not yet in the downloaded IPTV catalogue.</p><div class="notice"><strong>This is a Boss extension, not standard Xtream behavior.</strong> An unmodified IPTV player cannot forward its local search to Boss. Detect the extension first and retain normal Xtream behavior when it is unavailable.</div></section>
 <section id="quickstart"><h2>Use an existing Xtream login</h2><p>The JavaScript module has no dependencies and uses Fetch. It works in modern browsers and Node.js 20+. Download it into the player's codebase and import it locally.</p><pre><code>import { BossClient, BossError } from './boss-client.mjs';
 
@@ -122,5 +122,28 @@ const captions = await boss.subtitles(episodes.items[0].id);</code></pre>
 <p>The same method works for native .boss files/links, Boss-aware M3U discovery and Xtream SDK connections. Native mode uses the advertised guide URL; Xtream mode sends credentials in a POST body to <code>{server}/xmltv.php</code>. Ordinary M3U clients use <code>x-tvg-url</code>; ordinary Xtream clients use XMLTV or their short-guide API. Channel IDs remain stable across outputs and restarts. XMLTV timestamps include a UTC offset; convert them for the viewer's timezone.</p>
 <p>Guides are merged only from the library's enabled, authorized sources. Xtream sources automatically check their authenticated default XMLTV endpoint. M3U sources discover <code>x-tvg-url</code> or <code>url-tvg</code> in the playlist header. An explicitly configured XMLTV URL takes precedence. Missing or denied provider guides do not become invented programme data. Movies, series and WebDAV file libraries have metadata, not live schedules. Rendering now/next and the guide grid remains the app's responsibility.</p>
 </section>
-<footer>BossTunnel / SDK v1 <a href="/bossmedia/">Back to server workspace</a></footer>
+<section id="mcp"><h2>Developer MCP</h2>
+<p>Connect an MCP-compatible coding agent to <code>https://bosstunnel.com/mcp</code> using Streamable HTTP. No BOSS account, source password or administration token is required. This read-only service exposes the public protocol specification, app SDK, addon SDK and examples.</p>
+<pre><code>import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport }
+  from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+
+const client = new Client({ name: 'boss-integration', version: '1.0.0' });
+try {
+  await client.connect(new StreamableHTTPClientTransport(
+    new URL('https://bosstunnel.com/mcp')
+  ));
+  const docs = await client.callTool({
+    name: 'boss_docs', arguments: { document: 'protocol' }
+  });
+  // Follow nextOffset to read the complete document.
+} finally {
+  await client.close();
+}</code></pre>
+<div class="table"><table><thead><tr><th>Tool</th><th>Purpose</th></tr></thead><tbody><tr><td>boss_docs</td><td>Read public protocol references and SDK source in bounded pages</td></tr><tr><td>boss_search_docs</td><td>Find text across the public integration documentation</td></tr><tr><td>boss_validate_descriptor</td><td>Check a sanitized .boss descriptor offline</td></tr></tbody></table></div>
+<p>Agents can also read <code>boss://docs/protocol</code> resources and request the <code>integrate_boss</code> prompt with target <code>app</code> or <code>addon</code>. The service cannot search customer libraries, modify accounts, execute code, fetch submitted URLs or verify media playback. Do not submit private addon links, credentials or personal data.</p>
+<p>Use client-managed MCP initialization. Request bodies are limited to 32 KiB; the endpoint allows 16 concurrent requests and 600 requests per minute globally. Respect HTTP 429 and Retry-After. Only same-origin browser requests are accepted; server-side agents can connect without an Origin header. The human-readable guide is this page, not the protocol endpoint.</p>
+<p><a href="https://github.com/bradfran-hub/bosstunnel/blob/main/MCP.md">MCP connection reference</a></p>
+</section>
+<footer>BossTunnel / SDK v1 <a href="/bossmedia/workspace">Server workspace</a></footer>
 </main></div></body></html>

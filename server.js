@@ -198,6 +198,10 @@ async function play(req, res, lib, media, context = {}) {
 async function route(req, res) {
   await ready;
   const url = new URL(req.url, "http://boss.internal");
+  if (url.pathname === `${BASE}/mcp`) {
+    developerMcp ||= require("./core/developer-mcp").createDeveloperMcp({ publicUrl: PUBLIC });
+    return developerMcp(req, res);
+  }
   if (req.method === "OPTIONS") { res.writeHead(204, { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET,HEAD,POST,DELETE,OPTIONS", "Access-Control-Allow-Headers": "Content-Type,X-Boss-Admin,Range" }); return res.end(); }
   if (url.pathname === BASE) { res.writeHead(302, { Location: `${BASE}/` }); return res.end(); }
   if (!url.pathname.startsWith(`${BASE}/`)) throw fail("Not found", 404);
@@ -377,6 +381,7 @@ async function route(req, res) {
   res.writeHead(200, { "Content-Type": type, "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Content-Security-Policy": "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'" });
   res.end(type === "text/html" ? data.toString("utf8").replaceAll("/bossmedia/", `${BASE}/`) : data);
 }
+let developerMcp;
 const server = http.createServer((req, res) => route(req, res).catch((error) => {
   if (!res.headersSent && error.status === 429 && Number.isSafeInteger(error.retryAfter)) res.setHeader("Retry-After", String(error.retryAfter));
   json(res, error.status || 502, { error: error.status ? error.message : "Source operation failed. Check source availability and credentials." });
