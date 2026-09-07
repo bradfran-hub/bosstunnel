@@ -19,14 +19,16 @@ async function* playlist(library, credentials) {
   }
 }
 async function* xmltv(library) {
-  yield '<?xml version="1.0" encoding="UTF-8"?><tv generator-info-name="Boss Media Servers">';
+  yield '<?xml version="1.0" encoding="UTF-8"?><tv generator-info-name="BossTunnel">';
   for await (const channel of library.items({ types: ["channel"] })) yield `<channel id="${library.engine.synthetic("xtream", channel.id)}"><display-name>${xml(channel.title)}</display-name></channel>`;
   let after = 0;
   while (true) {
-    const events = library.graph.sql("SELECT e.* FROM EPGEvents e WHERE e.id>? AND e.source_id IN (SELECT value FROM json_each(?)) AND EXISTS(SELECT 1 FROM SourceMappings sm WHERE sm.media_id=e.channel_id AND sm.source_id=e.source_id AND sm.active=1) ORDER BY e.id LIMIT 200").all(after, JSON.stringify(library.collection.sourceIds));
+    // Follow the ID cursor; a source-first index sorts the entire guide on each page.
+    const events = library.graph.sql("SELECT e.* FROM EPGEvents e NOT INDEXED WHERE e.id>? AND e.source_id IN (SELECT value FROM json_each(?)) AND EXISTS(SELECT 1 FROM SourceMappings sm WHERE sm.media_id=e.channel_id AND sm.source_id=e.source_id AND sm.active=1) ORDER BY e.id LIMIT 200").all(after, JSON.stringify(library.collection.sourceIds));
     if (!events.length) break;
     for (const event of events) yield `<programme channel="${library.engine.synthetic("xtream", event.channel_id)}" start="${time(event.starts_at)}" stop="${time(event.ends_at)}"><title>${xml(event.title)}</title><desc>${xml(event.description)}</desc></programme>`;
     after = events.at(-1).id;
+    await new Promise(resolve => setImmediate(resolve));
   }
   yield "</tv>";
 }
