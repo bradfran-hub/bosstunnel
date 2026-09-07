@@ -155,8 +155,8 @@ function handoff(req, res, lib, sourceId, resource) {
 async function play(req, res, lib, media, context = {}) {
   const capabilities = require("./core/player-capabilities").parseCapabilities(new URL(req.url, "http://boss.internal").searchParams);
   const result = await lib.resolve(media, { output: "http", protocols: ["http", "hls"], ...capabilities, ...context });
-  const candidate = result.candidates.find(item => !Object.keys(item.requiredHeaders || {}).length);
-  if (!candidate) throw fail("No redirect-compatible resource; use a header-aware player with the BOSS playback API", 422);
+  const candidate = result.candidates.find(item => !Object.keys(item.requiredHeaders || {}).length) || result.candidates[0];
+  if (!candidate) throw fail("No playable resource is available", 422);
   return handoff(req, res, lib, candidate.sourceId, { url: candidate.resource.url });
 }
 async function route(req, res) {

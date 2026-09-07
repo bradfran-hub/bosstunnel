@@ -11,10 +11,10 @@ function directResource(resource) {
   };
 }
 
-// A redirect cannot instruct an ordinary IPTV player to add provider headers.
+// Redirect the exact upstream URL. HTTP cannot carry required request headers;
+// header-aware clients should use the native resource contract instead.
 function redirectPlayback(req, res, resource) {
   const direct = directResource(resource);
-  if (Object.keys(direct.requiredHeaders).length) throw Object.assign(new Error("This source requires a header-aware player using the BOSS playback API"), { status: 422 });
   res.writeHead(307, {
     Location: direct.url, "Cache-Control": "private, no-store", "Referrer-Policy": "no-referrer",
     "Access-Control-Allow-Origin": "*", "X-Content-Type-Options": "nosniff", "Content-Length": "0"

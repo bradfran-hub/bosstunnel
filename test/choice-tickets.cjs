@@ -82,7 +82,8 @@ test("all playback outputs hand off exact upstream URLs without fetching media",
     const legacy = item => `${root}/resource/${Buffer.from(graph.secrets.seal(item)).toString("base64url")}`;
     const redeemed = await fetch(legacy(value), { redirect: "manual" });
     assert.equal(redeemed.status, 307); assert.equal(redeemed.headers.get("location"), exact);
-    assert.equal((await fetch(legacy({ ...value, resource: { url: exact, headers: chosen.requiredHeaders } }), { redirect: "manual" })).status, 422);
+    const headerTicket = await fetch(legacy({ ...value, resource: { url: exact, headers: chosen.requiredHeaders } }), { redirect: "manual" });
+    assert.equal(headerTicket.status, 307); assert.equal(headerTicket.headers.get("location"), exact);
     assert.equal((await fetch(legacy({ ...value, expires: 1 }), { redirect: "manual" })).status, 403);
     graph.updateCollection(collection.id, { ...collection, profile: { maxHeight: 720 } });
     assert.equal((await fetch(legacy(value), { redirect: "manual" })).status, 403);
@@ -103,7 +104,8 @@ test("all playback outputs hand off exact upstream URLs without fetching media",
       return [{ url: exact, requiredHeaders: { Authorization: "Bearer fixture-secret" } }];
     } });
     graph.updateSource(sourceId, { configuration: { replaced: true } });
-    assert.equal((await fetch(xtream, { redirect: "manual" })).status, 422);
+    const headerOnlyRedirect = await fetch(xtream, { redirect: "manual" });
+    assert.equal(headerOnlyRedirect.status, 307); assert.equal(headerOnlyRedirect.headers.get("location"), exact);
     const headerOnly = await (await fetch(endpoint)).json();
     assert.equal(headerOnly.resources.length, 1);
     assert.equal(headerOnly.resources[0].url, exact);
