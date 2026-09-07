@@ -2,6 +2,7 @@
 const crypto = require("node:crypto");
 const { httpMedia } = require("../stream-policy");
 const { WorkLimiter } = require("./limiter");
+const { streamDetails } = require("./stream-details");
 
 function expiry(value) {
   if (value == null || value === "") return undefined;
@@ -24,7 +25,7 @@ function normalizeCandidate(raw, sourceId, now = Date.now()) {
   for (const [name, value] of Object.entries(raw.requiredHeaders || resource.headers || {})) {
     if (["authorization", "referer", "user-agent", "origin", "x-emby-token", "x-emby-authorization", "x-plex-token", "x-plex-client-identifier", "x-plex-product", "x-plex-version"].includes(name.toLowerCase()) && typeof value === "string" && !/[\r\n]/.test(value)) headers[name] = value;
   }
-  return { sourceId, resource: { url: resource.url }, protocol, quality: raw.quality || null, resolution: raw.resolution || null, codec: raw.codec ? String(raw.codec).toLowerCase() : null, container: raw.container ? String(raw.container).toLowerCase() : null, hdr: raw.hdr || null, audio: Array.isArray(raw.audio) ? raw.audio : [], languages: Array.isArray(raw.languages) ? raw.languages.map(String) : [], subtitles: (Array.isArray(raw.subtitles) ? raw.subtitles : []).filter((subtitle) => httpMedia(subtitle.url)), requiredHeaders: headers, expiresAt: expiresAt || null, resolver: { kind: "resolved-http", ...(raw.resolver?.provider ? { provider: String(raw.resolver.provider) } : {}) } };
+  return { sourceId, resource: { url: resource.url }, protocol, ...streamDetails(raw), container: typeof raw.container === "string" && /^[a-z0-9]{1,16}$/i.test(raw.container) ? raw.container.toLowerCase() : null, audio: (Array.isArray(raw.audio) ? raw.audio : []).filter(track => track && typeof track === "object").map(track => ({ codec: track.codec, language: track.language, channels: track.channels })), languages: Array.isArray(raw.languages) ? raw.languages.map(String) : [], subtitles: (Array.isArray(raw.subtitles) ? raw.subtitles : []).filter((subtitle) => httpMedia(subtitle.url)), requiredHeaders: headers, expiresAt: expiresAt || null, resolver: { kind: "resolved-http", ...(raw.resolver?.provider ? { provider: String(raw.resolver.provider) } : {}) } };
 }
 function compatible(candidate, context) {
   if (context.protocols?.length && !context.protocols.includes(candidate.protocol)) return false;
@@ -51,15 +52,15 @@ class ResolverEngine {
   }
   candidatesFor(media, allowedSourceIds) {
     const mappings = this.graph.mappings(media.id, allowedSourceIds);
-    const found = new Map(mappings.map((mapping) => [mapping.sourceId, mapping]));
+    const found = new Set(mappings.map((mapping) => mapping.sourceId));
     const identity = media.type === "episode" ? this.graph.media(media.seriesId)?.externalIDs || {} : media.externalIDs;
     for (const sourceId of allowedSourceIds) {
       if (found.has(sourceId)) continue;
       const source = this.graph.source(sourceId);
       if (!source?.enabled || !source.capabilities.streams || !source.capabilities.types.includes(media.type)) continue;
-      if (source.capabilities.identityNamespaces.some((namespace) => identity[namespace])) found.set(sourceId, { sourceId, sourceKey: null, sourceType: media.type, resolverData: {}, priority: source.priority, revision: source.revision });
+      if (source.capabilities.identityNamespaces.some((namespace) => identity[namespace])) mappings.push({ sourceId, sourceKey: null, sourceType: media.type, resolverData: {}, priority: source.priority, revision: source.revision });
     }
-    return [...found.values()];
+    return mappings;
   }
   async resolve(mediaOrId, context = {}) {
     const media = this.graph.media(typeof mediaOrId === "object" ? mediaOrId.id : mediaOrId);
@@ -81,15 +82,20 @@ class ResolverEngine {
     };
     await Promise.all(Array.from({ length: Math.min(this.concurrency, sources.length) }, worker));
     // A source may be revoked while its network request is in flight.
-    const candidates = results.filter((row) => { const source = this.graph.source(row.candidate.sourceId); return source?.enabled && source.revision === row.revision; }).sort((a, b) => b.score - a.score || a.candidate.sourceId.localeCompare(b.candidate.sourceId)).map((row) => row.candidate);
-    const unique = candidates.filter((candidate, index) => candidates.findIndex((other) => other.resource.url === candidate.resource.url && JSON.stringify(other.requiredHeaders) === JSON.stringify(candidate.requiredHeaders)) === index);
+    const candidates = results.filter((row) => { const source = this.graph.source(row.candidate.sourceId); return source?.enabled && source.revision === row.revision && (!row.candidate.expiresAt || row.candidate.expiresAt > this.clock() + 1000); }).sort((a, b) => b.score - a.score || a.candidate.sourceId.localeCompare(b.candidate.sourceId)).map((row) => row.candidate);
+    const seen = new Set();
+    const unique = candidates.filter(candidate => {
+      const key = JSON.stringify([candidate.sourceId, candidate.resource.url, candidate.requiredHeaders]);
+      if (seen.has(key)) return false;
+      seen.add(key); return true;
+    });
     if (!unique.length) throw Object.assign(new Error("No compatible authorized HTTP streams are available"), { status: 422, failures });
     return { mediaId: media.id, selected: unique[0], candidates: unique, failures };
   }
   async sourceCandidates(media, mapping, context) {
     const contextKey = { output: context.output || "", protocols: context.protocols || [], codecs: context.codecs || [], containers: context.containers || [], language: context.language || "", maxHeight: context.maxHeight || 0, desiredHeight: context.desiredHeight || 0, hdr: context.hdr ?? null, strictCapabilities: Boolean(context.strictCapabilities), directPlay: context.directPlay !== false };
     if (context.start != null) { contextKey.start = context.start; contextKey.end = context.end; }
-    const key = crypto.createHash("sha256").update(JSON.stringify([media.id, mapping.sourceId, mapping.revision, contextKey])).digest("hex");
+    const key = crypto.createHash("sha256").update(JSON.stringify(["choices-v1", media.id, mapping.sourceId, mapping.sourceType, mapping.sourceKey, mapping.revision, contextKey])).digest("hex");
     const cached = this.graph.sql("SELECT encrypted_result FROM ResolutionCache WHERE cache_key=? AND expires_at>?").get(key, this.clock());
     if (cached) return this.graph.secrets.open(cached.encrypted_result);
     if (this.pending.has(key)) return this.pending.get(key);
@@ -121,7 +127,7 @@ class ResolverEngine {
     try { raw = await Promise.race([adapter[method](media, mapping.sourceKey == null ? null : mapping, { ...context, signal: controller.signal, series: media.type === "episode" ? this.graph.media(media.seriesId) : undefined }), timeoutPromise]); }
     finally { clearTimeout(timeout); }
     const now = this.clock();
-    const normalized = (Array.isArray(raw) ? raw : []).slice(0, 200).map((candidate) => normalizeCandidate(candidate, mapping.sourceId, now)).filter(Boolean);
+    const normalized = (Array.isArray(raw) ? raw : []).map((candidate) => normalizeCandidate(candidate, mapping.sourceId, now)).filter(Boolean);
     const current = this.graph.source(mapping.sourceId);
     if (!current?.enabled || current.revision !== mapping.revision) return [];
     const ttl = Math.max(0, Math.min(adapter.resolutionTtlMs ?? 30000, 300000));

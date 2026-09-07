@@ -2,6 +2,12 @@
 const { capabilities } = require("../core/model");
 const { json, jsonValues, pages, request } = require("./transport");
 const { xmltv, probeXmltv } = require("./xmltv");
+const { streamDetails } = require("../core/stream-details");
+
+function xtreamDetails(raw) {
+  const video = raw.info?.video || raw.video || {};
+  return streamDetails({ name: raw.name || raw.title || raw.info?.name, codec: video.codec_name, resolution: { width: video.width, height: video.height } });
+}
 
 async function createXtreamSource(source) {
   const config = source.configuration;
@@ -14,7 +20,7 @@ async function createXtreamSource(source) {
   const archiveClock = new Intl.DateTimeFormat("en-GB", { timeZone: config.archiveTimezone || auth.server_info?.timezone || "UTC", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
   const caps = capabilities({ catalog: true, metadata: true, streams: true, live: true, epg: Boolean(guideUrl), catchup: Boolean(config.enableCatchup), types: ["movie", "series", "episode", "channel"] });
   const catalogs = [{ key: "movies", type: "movie", title: "Movies", enumerable: true }, { key: "series", type: "series", title: "Series", enumerable: true }, { key: "channels", type: "channel", title: "Live TV", enumerable: true }];
-  const meta = (raw, type, extra = {}) => ({ type, sourceKey: String(raw.series_id ?? raw.stream_id ?? raw.id), title: raw.name || raw.title || "Untitled", description: raw.plot || raw.info?.plot, year: Number(String(raw.releaseDate || raw.release_date || "").slice(0, 4)) || undefined, genres: raw.genre ? raw.genre.split(/[,/]/).map((g) => g.trim()) : [], rating: Number(raw.rating) || undefined, externalIDs: { imdb: raw.imdb_id || raw.info?.imdb_id, tmdb: raw.tmdb_id || raw.tmdb || raw.info?.tmdb_id, tvdb: raw.tvdb_id }, artwork: raw.stream_icon || raw.cover ? { poster: raw.stream_icon || raw.cover, ...(type === "channel" ? { logo: raw.stream_icon } : {}) } : {}, channel: type === "channel" ? { number: raw.num == null ? null : String(raw.num), epgId: raw.epg_channel_id || null, catchupDays: config.enableCatchup && Number(raw.tv_archive) ? Number(raw.tv_archive_duration) || 0 : 0 } : undefined, categories: raw.category_id ? [{ key: String(raw.category_id), name: raw.category_name || String(raw.category_id), kind: type }] : [], resolverData: { id: String(raw.series_id ?? raw.stream_id ?? raw.id), extension: raw.container_extension || (type === "channel" ? "ts" : "mp4"), category: String(raw.category_id || ""), catchupDays: Number(raw.tv_archive) ? Number(raw.tv_archive_duration) || 0 : 0 }, ...extra });
+  const meta = (raw, type, extra = {}) => ({ type, sourceKey: String(raw.series_id ?? raw.stream_id ?? raw.id), title: raw.name || raw.title || "Untitled", description: raw.plot || raw.info?.plot, year: Number(String(raw.releaseDate || raw.release_date || "").slice(0, 4)) || undefined, genres: raw.genre ? raw.genre.split(/[,/]/).map((g) => g.trim()) : [], rating: Number(raw.rating) || undefined, externalIDs: { imdb: raw.imdb_id || raw.info?.imdb_id, tmdb: raw.tmdb_id || raw.tmdb || raw.info?.tmdb_id, tvdb: raw.tvdb_id }, artwork: raw.stream_icon || raw.cover ? { poster: raw.stream_icon || raw.cover, ...(type === "channel" ? { logo: raw.stream_icon } : {}) } : {}, channel: type === "channel" ? { number: raw.num == null ? null : String(raw.num), epgId: raw.epg_channel_id || null, catchupDays: config.enableCatchup && Number(raw.tv_archive) ? Number(raw.tv_archive_duration) || 0 : 0 } : undefined, categories: raw.category_id ? [{ key: String(raw.category_id), name: raw.category_name || String(raw.category_id), kind: type }] : [], resolverData: { streamDetails: xtreamDetails(raw), id: String(raw.series_id ?? raw.stream_id ?? raw.id), extension: raw.container_extension || (type === "channel" ? "ts" : "mp4"), category: String(raw.category_id || ""), catchupDays: Number(raw.tv_archive) ? Number(raw.tv_archive_duration) || 0 : 0 }, ...extra });
   async function* records(key, signal) {
     if (key.startsWith("{")) {
       const descriptor = JSON.parse(key);
@@ -36,9 +42,17 @@ async function createXtreamSource(source) {
       const data = await json(endpoint("get_vod_info", { vod_id: mapping.sourceKey }), { signal: context.signal });
       return { ...meta({ ...data.info, ...data.movie_data, stream_id: mapping.sourceKey, plot: data.info?.plot, cover: data.info?.movie_image }, "movie"), title: data.info?.name || data.movie_data?.name || context.media.title };
     },
-    async resolve(media, mapping) {
+    async resolve(media, mapping, context = {}) {
       if (!mapping || !["movie", "episode", "channel"].includes(media.type)) return [];
-      return [{ resource: { url: target(media.type, mapping.sourceKey, mapping.resolverData.extension) }, container: mapping.resolverData.extension, protocol: mapping.resolverData.extension === "m3u8" ? "hls" : "http" }];
+      let details = mapping.resolverData.streamDetails || {};
+      if (media.type === "movie" && !details.resolution) {
+        try {
+          const signal = context.signal ? AbortSignal.any([context.signal, AbortSignal.timeout(3000)]) : AbortSignal.timeout(3000);
+          const data = await json(endpoint("get_vod_info", { vod_id: mapping.sourceKey }), { signal });
+          details = xtreamDetails({ ...data.movie_data, info: data.info });
+        } catch { /* Missing optional quality metadata must not prevent direct playback. */ }
+      }
+      return [{ resource: { url: target(media.type, mapping.sourceKey, mapping.resolverData.extension) }, ...details, container: mapping.resolverData.extension, protocol: mapping.resolverData.extension === "m3u8" ? "hls" : "http" }];
     },
     async *epg({ signal }) { if (guideUrl) yield* xmltv((await request(guideUrl, { signal })).body); },
     async catchup(media, mapping, context) {

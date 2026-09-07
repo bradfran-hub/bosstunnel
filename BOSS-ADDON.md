@@ -55,7 +55,15 @@ Native sources enable catch-up only with declared channel/stream support, a catc
 
 ## Playback Resources
 
-`GET {playback}` returns `{ "id": "canonical-id", "resources": [{ "url": "protected-play-url", "transport": "http", "resolution": "on-request" }] }` for playable media types. A series or season returns an empty resource list.
+`GET {playback}` resolves current candidates and returns `{ "id": "canonical-id", "resources": [...] }` for playable media types. A series or season returns an empty resource list. Catalogue and metadata requests never perform this stream lookup.
+
+The gateway returns an `Automatic` resource first (`mode: "automatic"`, `resolution: "on-request"`), followed by every compatible authorized choice (`mode: "selected"`). Render the complete array, not only `resources[0]`. Multiple versions from one provider and versions from different providers remain separate. Only identical URL/header combinations within the same provider are deduplicated. Unavailable sources can be reported in `failures` using source IDs and generic error codes; credentials and upstream error details are never included.
+
+Each selected resource contains `url`, `transport`, `name`, `title`, `source: { id, name, protocol }`, `tags`, `expiresAt` (UTC milliseconds), and nullable `quality`, `resolution: { width, height }`, `codec`, `container`, `hdr`, plus `audio` and `languages`. Tags are source-reported metadata or conservative extraction from source release labels, not verified media analysis. Missing quality is unknown, never an invented HD/4K claim. Render labels as text, not HTML. Choice IDs are response-local and must not be persisted as media identity.
+
+Selected URLs are encrypted, revision-bound links that expire within five minutes or earlier with upstream expiry. Fetch fresh playback details before starting an expired choice or retrying a failed choice. Selecting one plays that exact resource without silently switching quality/provider; Automatic retains resolver fallback. Access, source revision, collection revision and media membership are rechecked on redemption. An already-started HLS session uses separately protected child links bounded by upstream expiry, rather than the short selection window. No upstream credentials or required headers are exposed to the app.
+
+This resource contract also applies to the authenticated Xtream `boss_api?action=playback` extension and Boss-aware M3U discovery. Unmodified Xtream/M3U clients keep automatic playback and do not gain a native source picker.
 
 Requesting the protected play URL invokes the independent resolver against the library's currently authorized sources and playback profile. Catalogue presence is not a promise of stream availability. HTTP 422 means no usable resource could be provided. Text documents are not playable media. Torrent URLs, engines and payloads are excluded; already-resolved authorized HTTP resources are permitted.
 

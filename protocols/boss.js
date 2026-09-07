@@ -41,11 +41,26 @@ function createBossOutput(library, root) {
       return { items: items.map(media => record(media, category)), next: items.length === limit ? String(items.at(-1).id) : null, ...(options.search ? { nextOffset: items.length === limit ? skip + items.length : null } : {}) };
     },
     async media(id) { return { media: record(await library.metadata(library.media(id))) }; },
-    playback(id, params = new URLSearchParams()) {
+    async playback(id, params = new URLSearchParams()) {
       const media = library.media(id);
+      if (!["movie", "episode", "channel", "event"].includes(media.type)) return { id: media.canonicalId, resources: [] };
       const url = new URL(library.links.play(media));
       for (const [key, value] of Object.entries(capabilityQuery(params, library.collection.profile))) url.searchParams.set(key, value);
-      return { id: media.canonicalId, resources: ["movie", "episode", "channel", "event"].includes(media.type) ? [{ url: url.href, transport: "http", resolution: "on-request" }] : [] };
+      const result = await library.resolve(media, { output: "http", protocols: ["http", "hls"], ...require("../core/player-capabilities").parseCapabilities(params) });
+      const resources = result.candidates.map((candidate, index) => {
+        const source = library.graph.source(candidate.sourceId);
+        const tags = require("../core/stream-details").qualityTags(candidate);
+        const expiresAt = Math.min(Date.now() + 300000, candidate.expiresAt ? candidate.expiresAt - 1000 : Infinity);
+        return {
+          id: `choice-${index + 1}`, mode: "selected", name: source.name, title: [source.name, ...tags].join(" | "),
+          source: { id: source.id, name: source.name, protocol: source.protocol },
+          url: library.links.choice(media, candidate, expiresAt), transport: candidate.protocol,
+          quality: candidate.quality, resolution: candidate.resolution, codec: candidate.codec,
+          container: candidate.container, hdr: candidate.hdr, audio: candidate.audio,
+          languages: candidate.languages, tags, expiresAt
+        };
+      });
+      return { id: media.canonicalId, resources: [{ id: "automatic", mode: "automatic", name: "Automatic", title: "Automatic", url: url.href, transport: "http", resolution: "on-request", tags: [] }, ...resources], failures: result.failures };
     },
     catchup(id, params) {
       const media = library.media(id), context = { ...archiveContext(params), ...capabilityQuery(params, library.collection.profile) };

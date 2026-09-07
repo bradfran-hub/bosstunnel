@@ -141,12 +141,13 @@ function library(id) {
   const root = `${PUBLIC}/a/${id}`;
   return new OutputLibrary(engine, collection, {
     play: (media) => `${root}/play/${media.canonicalId}`,
+    choice: (media, candidate, expires) => ticket(id, candidate.sourceId, { url: candidate.resource.url, headers: candidate.requiredHeaders }, expires, { mediaId: media.canonicalId, protocol: candidate.protocol, expires: candidate.expiresAt || Date.now() + 3600000 }),
     artwork: (media, kind) => `${root}/artwork/${media.canonicalId}/${kind}`,
     resource: (resource, sourceId) => ticket(id, sourceId, resource), epg: `${root}/xmltv.xml`, boss: `${root}/addon.boss`
   });
 }
-function ticket(collectionId, sourceId, resource, expires = Date.now() + 3600000) {
-  return `${PUBLIC}/a/${collectionId}/resource/${Buffer.from(graph.secrets.seal({ collectionId, collectionRevision: graph.collection(collectionId).revision, sourceId, revision: graph.source(sourceId).revision, resource, expires })).toString("base64url")}`;
+function ticket(collectionId, sourceId, resource, expires = Date.now() + 3600000, playback) {
+  return `${PUBLIC}/a/${collectionId}/resource/${Buffer.from(graph.secrets.seal({ collectionId, collectionRevision: graph.collection(collectionId).revision, sourceId, revision: graph.source(sourceId).revision, resource, expires, ...(playback ? { playback } : {}) })).toString("base64url")}`;
 }
 async function proxy(req, res, lib, sourceId, resource, expires, mediaPlayback = false) {
   if (!lib.collection.sourceIds.includes(sourceId)) throw fail("Source access revoked", 403);
@@ -339,7 +340,22 @@ async function route(req, res) {
       let value;
       try { value = graph.secrets.open(Buffer.from(resource[1], "base64url").toString()); } catch { throw fail("Invalid resource", 403); }
       if (value.collectionId !== lib.collectionId || value.collectionRevision !== lib.collection.revision || value.expires <= Date.now() || graph.source(value.sourceId)?.revision !== value.revision) throw fail("Resource expired or revoked", 403);
-      return proxy(req, res, lib, value.sourceId, value.resource, value.expires);
+      if (!value.playback) return proxy(req, res, lib, value.sourceId, value.resource, value.expires);
+      const item = lib.media(value.playback.mediaId);
+      const candidate = { sourceId: value.sourceId, resource: value.resource, requiredHeaders: value.resource.headers || {} };
+      const record = result => {
+        if (graph.source(value.sourceId)?.revision !== value.revision) return;
+        try { engine.resolver.evidence.record(item.id, candidate, result); } catch { console.error("Playback evidence could not be stored"); }
+      };
+      try {
+        const result = await proxy(req, res, lib, value.sourceId, value.resource, value.playback.expires, true);
+        if (value.playback.protocol === "http" && result?.outcome) record(result);
+        return;
+      } catch (error) {
+        if (error.status !== 429) record({ bytes: error.bytesDelivered || 0, outcome: error.code === "UPSTREAM_IDLE_TIMEOUT" ? "failure" : res.headersSent || res.destroyed ? "interrupted" : "failure" });
+        if (error.refreshPlayback) engine.resolver.invalidatePlayback(item.id, [candidate]);
+        throw error;
+      }
     }
     const output = createAddonOutput(lib);
     if (rest === descriptorFile) return json(res, 200, output.manifest);
