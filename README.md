@@ -15,6 +15,8 @@ Original code and protocol documentation are licensed under [MIT](LICENSE).
 
 Source adapter -> persistent canonical media graph -> resolver -> output adapter.
 
+Playback is adapter-only: BOSS supplies exact upstream URLs and required player headers. Video flows Provider to Player; there is no BOSS video proxy, HLS rewriting, remuxing or transcoding. Standard Xtream/M3U playback uses HTTP 307 redirects; header-dependent streams need the BOSS API and a header-aware player. Direct links can disclose provider credentials to authorized players, and cannot be revoked by BOSS after handoff. See [the direct playback contract](BOSS-ADDON.md#playback-resources).
+
 The catalogue stores metadata and stable identities separately from playback.
 Playback is resolved on request using the connected library's authorized sources.
 Synthetic Xtream IDs persist across restarts. Library merging, pagination,

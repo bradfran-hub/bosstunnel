@@ -24,7 +24,8 @@ function createAddonOutput(library) {
   if (supported.streams) builder.defineStreamHandler(async ({ id }) => {
     const media = item(id);
     if (media.type === "series") return { streams: [] };
-    return { streams: [{ name: library.collection.name, title: media.title, url: library.links.play(media), behaviorHints: { notWebReady: true } }] };
+    const { resources } = await library.playbackChoices(media);
+    return { streams: resources.map(resource => ({ name: resource.qualityLabel, title: [resource.title, resource.source.name].join("\n"), url: resource.url, behaviorHints: { notWebReady: true, ...(Object.keys(resource.requiredHeaders).length ? { proxyHeaders: { request: resource.requiredHeaders } } : {}) } })) };
   });
   if (supported.subtitles) builder.defineSubtitlesHandler(async ({ id }) => ({ subtitles: (await library.subtitles(item(id))).map((subtitle) => ({ id: subtitle.id, lang: subtitle.language, url: library.links.resource(subtitle.resource, subtitle.sourceId) })) }));
   const iface = builder.getInterface();

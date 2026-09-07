@@ -56,7 +56,11 @@ class OutputLibrary {
   async metadata(media) { this.authorize(media); return this.authorize(await this.engine.metadata(media.id, this.context)); }
   artwork(media) {
     const art = this.engine.artwork(media.id, this.collection.sourceIds);
-    return Object.fromEntries(Object.keys(art).map((kind) => [kind, this.links.artwork(media, kind)]));
+    return Object.fromEntries(Object.entries(art).map(([kind, value]) => [kind, value.resource.url]));
+  }
+  artworkResources(media) {
+    const art = this.engine.artwork(media.id, this.collection.sourceIds);
+    return Object.fromEntries(Object.entries(art).map(([kind, value]) => [kind, require("../playback").directResource(value.resource)]));
   }
   async resolve(media, context) {
     this.authorize(media);
@@ -68,6 +72,26 @@ class OutputLibrary {
     }
     this.authorize(media);
     return result;
+  }
+  async playbackChoices(media, context = {}) {
+    const result = await this.resolve(media, { output: "http", protocols: ["http", "hls"], ...context });
+    const { qualityTags, qualityLabel } = require("../core/stream-details");
+    const { directResource } = require("../playback");
+    const resources = result.candidates.map((candidate, index) => {
+      const source = this.graph.source(candidate.sourceId);
+      const tags = qualityTags(candidate), label = qualityLabel(candidate);
+      return {
+        id: `choice-${index + 1}`, mode: "selected", name: label, qualityLabel: label,
+        title: [...new Set([label, ...tags])].join(" | "),
+        source: { id: source.id, name: source.name, protocol: source.protocol },
+        ...directResource({ url: candidate.resource.url, headers: candidate.requiredHeaders }),
+        transport: candidate.protocol, quality: candidate.quality, resolution: candidate.resolution,
+        codec: candidate.codec, container: candidate.container, hdr: candidate.hdr,
+        audio: candidate.audio, languages: candidate.languages, tags,
+        expiresAt: candidate.expiresAt || null
+      };
+    });
+    return { resources, failures: result.failures };
   }
   async subtitles(media) {
     this.authorize(media);

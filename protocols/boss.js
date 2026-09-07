@@ -11,7 +11,7 @@ function createBossOutput(library, root) {
     id: media.canonicalId, xtreamId: library.engine.synthetic("xtream", media.id), type: media.type, title: media.title, originalTitle: media.originalTitle,
     year: media.year, description: media.description, genres: media.genres, runtimeSeconds: media.runtimeSeconds,
     rating: media.rating, certification: media.certification, releaseDate: media.releaseDate,
-    identities: media.externalIDs, artwork: library.artwork(media),
+    identities: media.externalIDs, artwork: library.artwork(media), artworkResources: library.artworkResources(media),
     ...(["movie", "series", "channel", "event"].includes(media.type) ? { category: primaryCategory(library, media, category) } : {}),
     ...(media.type === "channel" ? { channel: { number: media.channel?.number || null, epgId: String(library.engine.synthetic("xtream", media.id)), catchupDays: library.archiveDays(media) } } : {}),
     ...(media.seriesId ? { seriesId: library.graph.media(media.seriesId)?.canonicalId, seasonNumber: media.seasonNumber, episodeNumber: media.episodeNumber } : {}),
@@ -24,6 +24,7 @@ function createBossOutput(library, root) {
       resources: { categories: `${root}/boss/categories`, catalogue: `${root}/boss/catalogue`, media: `${root}/boss/media/{id}`, ...(library.capabilities.streams ? { playback: `${root}/boss/playback/{id}` } : {}), ...(library.capabilities.subtitles ? { subtitles: `${root}/boss/subtitles/{id}` } : {}), ...(library.capabilities.epg ? { guide: `${root}/xmltv.xml` } : {}), ...(library.capabilities.catchup ? { catchup: `${root}/boss/catchup/{id}` } : {}) },
       pagination: { mode: "cursor", parameter: "after", maximumPageSize: 200 },
       playbackCapabilities: capabilityDescriptor(),
+      playbackDelivery: { mode: "direct", proxiesMedia: false, rewritesHls: false, requiredHeaders: true },
       security: { access: "private-link", torrents: false }
     }),
     categories(params) { return categoryPage(library, params); },
@@ -46,28 +47,17 @@ function createBossOutput(library, root) {
       if (!["movie", "episode", "channel", "event"].includes(media.type)) return { id: media.canonicalId, resources: [] };
       const url = new URL(library.links.play(media));
       for (const [key, value] of Object.entries(capabilityQuery(params, library.collection.profile))) url.searchParams.set(key, value);
-      const result = await library.resolve(media, { output: "http", protocols: ["http", "hls"], ...require("../core/player-capabilities").parseCapabilities(params) });
-      const resources = result.candidates.map((candidate, index) => {
-        const source = library.graph.source(candidate.sourceId);
-        const tags = require("../core/stream-details").qualityTags(candidate);
-        const expiresAt = Math.min(Date.now() + 86400000, candidate.expiresAt ? candidate.expiresAt - 1000 : Infinity);
-        return {
-          id: `choice-${index + 1}`, mode: "selected", name: source.name, title: [source.name, ...tags].join(" | "),
-          source: { id: source.id, name: source.name, protocol: source.protocol },
-          url: library.links.choice(media, candidate, expiresAt), transport: candidate.protocol,
-          quality: candidate.quality, resolution: candidate.resolution, codec: candidate.codec,
-          container: candidate.container, hdr: candidate.hdr, audio: candidate.audio,
-          languages: candidate.languages, tags, expiresAt
-        };
-      });
-      return { id: media.canonicalId, resources: [{ id: "automatic", mode: "automatic", name: "Automatic", title: "Automatic", url: url.href, transport: "http", resolution: "on-request", tags: [] }, ...resources], failures: result.failures };
+      const result = await library.playbackChoices(media, require("../core/player-capabilities").parseCapabilities(params));
+      const automatic = result.resources.some(resource => !Object.keys(resource.requiredHeaders).length)
+        ? [{ id: "automatic", mode: "automatic", name: "Automatic", title: "Automatic", url: url.href, delivery: "redirect", requiredHeaders: {}, transport: "http", resolution: "on-request", tags: [] }] : [];
+      return { id: media.canonicalId, ...result, resources: [...automatic, ...result.resources] };
     },
-    catchup(id, params) {
-      const media = library.media(id), context = { ...archiveContext(params), ...capabilityQuery(params, library.collection.profile) };
+    async catchup(id, params) {
+      const media = library.media(id), context = { ...archiveContext(params), ...require("../core/player-capabilities").parseCapabilities(params) };
       if (!library.archiveDays(media)) throw Object.assign(new Error("Archive playback is not supported"), { status: 422 });
-      return { id: media.canonicalId, resources: [{ url: `${library.links.play(media)}?${new URLSearchParams(context)}`, transport: "http", resolution: "on-request" }] };
+      return { id: media.canonicalId, ...await library.playbackChoices(media, context) };
     },
-    async subtitles(id) { return { subtitles: (await library.subtitles(library.media(id))).map((item) => ({ id: item.id, language: item.language, url: library.links.resource(item.resource, item.sourceId) })) }; }
+    async subtitles(id) { return { subtitles: (await library.subtitles(library.media(id))).map((item) => ({ id: item.id, language: item.language, ...require("../playback").directResource(item.resource) })) }; }
   };
 }
 module.exports = { createBossOutput, archiveContext };

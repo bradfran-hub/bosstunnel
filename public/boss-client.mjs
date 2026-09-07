@@ -1,6 +1,20 @@
 export class BossError extends Error {
   constructor(message, status) { super(message); this.name = "BossError"; this.status = status; }
 }
+// Prepares a player request only. This helper never downloads or relays media.
+export function playbackRequest(resource, { supportsHeaders = false, now = Date.now() } = {}) {
+  let target;
+  try { target = new URL(resource.url); } catch { throw new BossError("Invalid playback URL", 422); }
+  let decoded = target.href;
+  try { for (let i = 0; i < 3; i++) decoded = decodeURIComponent(decoded); } catch { throw new BossError("Invalid playback URL", 422); }
+  if (!["http:", "https:"].includes(target.protocol) || target.username || target.password || /(?:magnet:|urn:btih:|urn:btmh:|\.torrent\b)/i.test(decoded)) throw new BossError("Unsupported playback URL", 422);
+  if (resource.expiresAt != null && (!Number.isFinite(resource.expiresAt) || resource.expiresAt <= now)) throw new BossError("Playback link expired; request playback again", 403);
+  const headers = resource.requiredHeaders || {};
+  if (!headers || typeof headers !== "object" || Array.isArray(headers) || Object.entries(headers).some(([key, value]) => !/^[a-z0-9-]{1,80}$/i.test(key) || typeof value !== "string" || /[\r\n\0]/.test(value))) throw new BossError("Invalid playback headers", 422);
+  if (resource.headerOrigin && resource.headerOrigin !== target.origin) throw new BossError("Playback header origin mismatch", 422);
+  if (Object.keys(headers).length && !supportsHeaders) throw new BossError("This source requires a header-aware player", 422);
+  return { url: resource.url, headers: { ...headers }, headerOrigin: target.origin, referrerPolicy: "no-referrer" };
+}
 async function request(url, options = {}) {
   const response = await fetch(url, { ...options, cache: "no-store", referrerPolicy: "no-referrer" });
   const maximum = 8 * 1024 * 1024;

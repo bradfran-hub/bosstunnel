@@ -23,4 +23,8 @@ function qualityTags(candidate) {
     ...candidate.languages.filter(language => /^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/i.test(language))
   ].filter(Boolean))];
 }
-module.exports = { streamDetails, qualityTags };
+function qualityLabel(candidate) {
+  const height = candidate.resolution?.height;
+  return height === 2160 ? "4K UHD" : height === 4320 ? "8K UHD" : height ? `${height}p` : "Unknown quality";
+}
+module.exports = { streamDetails, qualityTags, qualityLabel };

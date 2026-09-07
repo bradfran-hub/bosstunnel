@@ -13,7 +13,7 @@ const { createXtreamOutput } = require("./protocols/xtream");
 const { createBossOutput, archiveContext } = require("./protocols/boss");
 const { playlist, xmltv } = require("./protocols/m3u");
 const { httpMedia } = require("./stream-policy");
-const { proxyStream } = require("./playback");
+const { redirectPlayback } = require("./playback");
 const { AuthLimit } = require("./core/auth-limit");
 const adminAttempts = new AuthLimit();
 const envFile = path.join(__dirname, ".env");
@@ -141,7 +141,6 @@ function library(id) {
   const root = `${PUBLIC}/a/${id}`;
   return new OutputLibrary(engine, collection, {
     play: (media) => `${root}/play/${media.canonicalId}`,
-    choice: (media, candidate, expires) => ticket(id, candidate.sourceId, { url: candidate.resource.url, headers: candidate.requiredHeaders }, expires, { mediaId: media.canonicalId, protocol: candidate.protocol, expires: candidate.expiresAt || expires }),
     artwork: (media, kind) => `${root}/artwork/${media.canonicalId}/${kind}`,
     resource: (resource, sourceId) => ticket(id, sourceId, resource), epg: `${root}/xmltv.xml`, boss: `${root}/addon.boss`
   });
@@ -149,51 +148,16 @@ function library(id) {
 function ticket(collectionId, sourceId, resource, expires = Date.now() + 3600000, playback) {
   return `${PUBLIC}/a/${collectionId}/resource/${Buffer.from(graph.secrets.seal({ collectionId, collectionRevision: graph.collection(collectionId).revision, sourceId, revision: graph.source(sourceId).revision, resource, expires, ...(playback ? { playback } : {}) })).toString("base64url")}`;
 }
-async function proxy(req, res, lib, sourceId, resource, expires, mediaPlayback = false) {
-  if (!lib.collection.sourceIds.includes(sourceId)) throw fail("Source access revoked", 403);
-  const stream = { url: resource.url, behaviorHints: { proxyHeaders: { request: resource.headers || {} } } };
-  const revision = graph.source(sourceId)?.revision;
-  const collectionRevision = lib.collection.revision;
-  return proxyStream(req, res, stream, (child) => ticket(lib.collectionId, sourceId, { url: child.url, headers: child.behaviorHints?.proxyHeaders?.request }, expires), { mediaPlayback, rateLimitScope: `${sourceId}:${revision}`, authorize: () => {
-    if (lib.collection.revision !== collectionRevision || !lib.collection.sourceIds.includes(sourceId) || graph.source(sourceId)?.revision !== revision) throw fail("Source access revoked", 403);
-  } });
+function handoff(req, res, lib, sourceId, resource) {
+  if (!lib.collection.sourceIds.includes(sourceId) || !graph.source(sourceId)?.enabled) throw fail("Source access revoked", 403);
+  return redirectPlayback(req, res, resource);
 }
 async function play(req, res, lib, media, context = {}) {
   const capabilities = require("./core/player-capabilities").parseCapabilities(new URL(req.url, "http://boss.internal").searchParams);
-  let lastError;
-  let rateLimitError;
-  const attempted = new Set();
-  for (let round = 0; round < 2; round++) {
-    const result = await lib.resolve(media, { output: "http", protocols: ["http", "hls"], ...capabilities, ...context });
-    const failed = [];
-    for (const candidate of result.candidates) {
-      const key = JSON.stringify([candidate.sourceId, candidate.resource.url, candidate.requiredHeaders]);
-      if (attempted.has(key)) continue;
-      attempted.add(key);
-      const evidenceRevision = graph.source(candidate.sourceId)?.revision;
-      const record = (result) => {
-        if (graph.source(candidate.sourceId)?.revision !== evidenceRevision) return;
-        // Evidence is advisory: an unavailable history store must not interrupt playback.
-        try { engine.resolver.evidence.record(media.id, candidate, result); } catch { console.error("Playback evidence could not be stored"); }
-      };
-      try {
-        const result = await proxy(req, res, lib, candidate.sourceId, { url: candidate.resource.url, headers: candidate.requiredHeaders }, candidate.expiresAt || Date.now() + 3600000, true);
-        if (candidate.protocol === "http" && result?.outcome) record(result);
-        return;
-      }
-      catch (error) {
-        if (error.status !== 429) record({ bytes: error.bytesDelivered || 0, outcome: error.code === "UPSTREAM_IDLE_TIMEOUT" ? "failure" : res.headersSent || res.destroyed ? "interrupted" : "failure" });
-        res.bossPlaybackTrace?.failure(error);
-        if (res.headersSent || res.destroyed) throw error;
-        lastError = error;
-        if (error.status === 429 && (!rateLimitError || error.retryAfter < rateLimitError.retryAfter)) rateLimitError = error;
-        if (error.refreshPlayback) failed.push(candidate);
-      }
-    }
-    if (!failed.length) break;
-    engine.resolver.invalidatePlayback(media.id, failed);
-  }
-  throw rateLimitError || lastError || fail("No playable resource is available", 422);
+  const result = await lib.resolve(media, { output: "http", protocols: ["http", "hls"], ...capabilities, ...context });
+  const candidate = result.candidates.find(item => !Object.keys(item.requiredHeaders || {}).length);
+  if (!candidate) throw fail("No redirect-compatible resource; use a header-aware player with the BOSS playback API", 422);
+  return handoff(req, res, lib, candidate.sourceId, { url: candidate.resource.url });
 }
 async function route(req, res) {
   await ready;
@@ -337,29 +301,18 @@ async function route(req, res) {
     if (artwork) {
       const item = lib.media(artwork[1]), art = engine.artwork(item.id, lib.collection.sourceIds)[artwork[2]];
       if (!art) throw fail("Artwork not found", 404);
-      return proxy(req, res, lib, art.sourceId, art.resource);
+      return handoff(req, res, lib, art.sourceId, art.resource);
     }
     const resource = rest.match(/^resource\/([A-Za-z0-9_-]+)$/);
     if (resource) {
       let value;
       try { value = graph.secrets.open(Buffer.from(resource[1], "base64url").toString()); } catch { throw fail("Invalid resource", 403); }
       if (value.collectionId !== lib.collectionId || value.collectionRevision !== lib.collection.revision || value.expires <= Date.now() || graph.source(value.sourceId)?.revision !== value.revision) throw fail("Resource expired or revoked", 403);
-      if (!value.playback) return proxy(req, res, lib, value.sourceId, value.resource, value.expires);
-      const item = lib.media(value.playback.mediaId);
-      const candidate = { sourceId: value.sourceId, resource: value.resource, requiredHeaders: value.resource.headers || {} };
-      const record = result => {
-        if (graph.source(value.sourceId)?.revision !== value.revision) return;
-        try { engine.resolver.evidence.record(item.id, candidate, result); } catch { console.error("Playback evidence could not be stored"); }
-      };
-      try {
-        const result = await proxy(req, res, lib, value.sourceId, value.resource, value.playback.expires, true);
-        if (value.playback.protocol === "http" && result?.outcome) record(result);
-        return;
-      } catch (error) {
-        if (error.status !== 429) record({ bytes: error.bytesDelivered || 0, outcome: error.code === "UPSTREAM_IDLE_TIMEOUT" ? "failure" : res.headersSent || res.destroyed ? "interrupted" : "failure" });
-        if (error.refreshPlayback) engine.resolver.invalidatePlayback(item.id, [candidate]);
-        throw error;
+      if (value.playback) {
+        lib.media(value.playback.mediaId);
+        if (value.playback.expires <= Date.now()) throw fail("Resource expired", 403);
       }
+      return handoff(req, res, lib, value.sourceId, value.resource);
     }
     const output = createAddonOutput(lib);
     if (rest === descriptorFile) return json(res, 200, output.manifest);

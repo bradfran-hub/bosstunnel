@@ -9,7 +9,13 @@ from database backups. Anyone with both the key and database can decrypt those
 records; compromise of the running server may expose currently used credentials.
 Titles, catalogue metadata and membership records are not a fully encrypted vault.
 
-Private addon URLs, Xtream credentials and protected playback links grant access.
+Private addon URLs, Xtream credentials and upstream playback links/headers grant access.
+Direct playback exposes provider URLs and required credentials to the authorized
+player. Share libraries only with trusted recipients. BOSS cannot revoke an
+upstream URL already handed off, conceal its credentials, repair provider CORS,
+or enforce response-body checks after redirecting. Players must scope headers
+to the stated origin, strip credentials on cross-origin redirects, reject
+non-media/torrent/DRM responses, and redact URLs and headers from all telemetry.
 Never publish them, include them in analytics, or share them in public issues.
 Use HTTPS, strong independent secrets, restricted administration and prompt updates.
 Native source author credentials are origin-scoped. Source administrators may

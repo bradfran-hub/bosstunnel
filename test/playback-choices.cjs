@@ -11,7 +11,6 @@ test("BOSS lists all providers and same-provider variants without catalogue-time
   const graph = engine.graph;
   const protocols = ["xtream", "addon", "plex", "emby", "jellyfin"];
   let calls = 0;
-  const tickets = [];
   try {
     for (const protocol of protocols) {
       graph.addSource({ id: protocol, protocol, name: `Provider ${protocol}`, configuration: {}, capabilities: { catalog: true, streams: true, types: ["movie", "series"], identityNamespaces: ["imdb"] } });
@@ -33,22 +32,22 @@ test("BOSS lists all providers and same-provider variants without catalogue-time
     });
     const library = new OutputLibrary(engine, collection, {
       play: item => `https://boss.example/play/${item.canonicalId}`,
-      artwork: () => "",
-      choice(item, candidate, expires) { tickets.push({ candidate, expires }); return `https://boss.example/protected/${tickets.length}`; }
+      artwork: () => ""
     });
     const output = createBossOutput(library, "https://boss.example/a/test");
     await output.catalogue(new URLSearchParams());
     assert.equal(calls, 0);
     const result = await output.playback(media.canonicalId);
     const choices = result.resources.filter(resource => resource.mode === "selected");
-    assert.equal(result.resources[0].mode, "automatic");
+    assert.ok(result.resources.every(resource => resource.mode === "selected"), "header-only sources require native direct playback");
     assert.equal(choices.length, 15);
     assert.deepEqual(new Set(choices.map(choice => choice.source.protocol)), new Set(protocols));
     assert.equal(choices.filter(choice => choice.source.protocol === "xtream").length, 2);
     assert.equal(choices.filter(choice => choice.source.protocol === "addon").length, 10);
     assert.ok(choices.every(choice => ["2160p", "WEB-DL", "HEVC", "HDR10", "EAC3", "en"].every(tag => choice.tags.includes(tag))));
-    assert.doesNotMatch(JSON.stringify(result), /private-fixture|owned\.example|Authorization|infoHash/);
-    assert.ok(tickets.every(ticket => ticket.expires <= Date.now() + 86400000));
+    assert.doesNotMatch(JSON.stringify(result), /infoHash/);
+    assert.ok(choices.every(choice => choice.url.startsWith("https://owned.example/") && choice.requiredHeaders.Authorization === "Bearer private-fixture"));
+    assert.ok(choices.every(choice => choice.name === "4K UHD" && choice.qualityLabel === "4K UHD" && choice.delivery === "direct"));
     assert.equal(calls, 6);
     await output.playback(media.canonicalId);
     assert.equal(calls, 6, "source mappings use independent cached results");
