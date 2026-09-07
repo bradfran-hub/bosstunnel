@@ -4,8 +4,8 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const { PasswordVaults } = require("../core/password-vault");
 const { Secrets } = require("../core/secrets");
-const password = "long vault fixture password only";
-const nextPassword = "new unrelated vault fixture password";
+const password = "long vault fixture password 1!";
+const nextPassword = "new unrelated vault 1!";
 
 test("password alone unlocks persisted customer secrets after process state is discarded", async () => {
   const directory = await fs.mkdtemp("/tmp/boss-password-vault-");

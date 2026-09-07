@@ -10,7 +10,7 @@ const { SourceRegistry } = require("../core/registry");
 const { ResolverEngine } = require("../core/resolver");
 const { capabilities } = require("../core/model");
 const secret = "administrator key cannot decrypt customer sources";
-const password = "customer unlock password for source fixtures";
+const password = "customer unlock password 1!";
 const declaration = capabilities({ streams: true, types: ["movie"] });
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 async function fixture() {

@@ -5,7 +5,7 @@ const { MediaGraph } = require("../core/graph");
 const { CustomerAuth } = require("../core/customer-auth");
 const { CatalogueRefresh } = require("../core/catalogue-refresh");
 const crypto = require("node:crypto");
-const password = "refresh fixture password with enough characters";
+const password = "refresh fixture password 1!";
 async function setup() {
   let now = 1000;
   const graph = new MediaGraph(":memory:", { secret: "refresh vault fixture server secret long enough", clock: () => now });

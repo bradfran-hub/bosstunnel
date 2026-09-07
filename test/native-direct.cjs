@@ -10,7 +10,7 @@ test("customer direct choices preserve headers and are blocked after vault lock"
   const engine = new MediaEngine(":memory:", { secret: "native direct customer fixture server secret" });
   const { CustomerAuth } = require("../core/customer-auth"), auth = new CustomerAuth(engine.graph);
   try {
-    const account = await auth.register({ username: "native-direct-owner", password: "native direct fixture password" }, "fixture");
+    const account = await auth.register({ username: "native-direct-owner", password: "native direct fixture password 1!" }, "fixture");
     const sourceId = engine.graph.addSource({ protocol: "addon", name: "Private provider", configuration: { password: "fixture-source-secret" }, customerId: account.customer.id, capabilities: { streams: true, catalog: true, types: ["movie"] } });
     const [id] = engine.graph.ingest(sourceId, [{ sourceKey: "film", type: "movie", title: "Fixture" }]);
     const collection = engine.graph.createCollection({ name: "Private", sourceIds: [sourceId], customerId: account.customer.id });

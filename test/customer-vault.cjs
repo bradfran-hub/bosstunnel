@@ -8,7 +8,7 @@ const { MediaGraph } = require("../core/graph");
 const { CustomerAuth } = require("../core/customer-auth");
 const { PasswordVaults } = require("../core/password-vault");
 const secret = "server secret is not a customer vault password";
-const password = "customer password independent of the server";
+const password = "customer password 1!";
 function setup() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "boss-auth-vault-"));
   const file = path.join(dir, "graph.db"), graph = new MediaGraph(file, { secret });

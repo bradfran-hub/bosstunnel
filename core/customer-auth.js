@@ -18,7 +18,8 @@ function username(value) {
   return value.toLowerCase();
 }
 function password(value, creating = false) {
-  if (typeof value !== "string" || Buffer.byteLength(value) > 512 || [...value].length > 128 || creating && [...value].length < 15) throw fail(creating ? "Use a password between 15 and 128 characters" : "Invalid username or password", creating ? 400 : 401);
+  const valid = typeof value === "string" && Buffer.byteLength(value) <= 512 && [...value].length >= 8 && [...value].length <= 128 && /[0-9]/.test(value) && /[^A-Za-z0-9\s]/.test(value);
+  if (!valid) throw fail(creating ? "Use 8-128 characters with at least one number and one special character" : "Invalid username or password", creating ? 400 : 401);
   return value;
 }
 class CustomerAuth {

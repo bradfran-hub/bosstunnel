@@ -27,7 +27,7 @@ async function main() {
     browser = await chromium.launch({ executablePath: "/root/.cache/ms-playwright/chromium_headless_shell-1217/chrome-headless-shell-linux64/chrome-headless-shell", headless: true, args: ["--no-sandbox"] });
     const context = await browser.newContext(), page = await context.newPage(), errors = [];
     page.on("pageerror", error => errors.push(error.message));
-    const password = "browser test account password", changedPassword = `${password} changed`, resetPassword = `${password} reset`;
+    const password = "browser test account 1!", changedPassword = `${password} changed`, resetPassword = `${password} reset`;
     const authForm = page.locator("#customer-form");
     await fs.mkdir(path.resolve("artifacts"), { recursive: true });
     async function screenshots(stage) {

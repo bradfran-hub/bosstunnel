@@ -8,7 +8,7 @@ const http = require("node:http");
 const { MediaGraph } = require("../core/graph");
 const { CustomerAuth } = require("../core/customer-auth");
 const secret = "customer-auth-test-encryption-secret-long-enough";
-const password = "test password with enough characters";
+const password = "test password 1!";
 
 test("HTTPS account configuration sets Secure cookies and rejects cross-site session mutations", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "boss-customer-secure-"));
@@ -54,6 +54,8 @@ test("customer credentials survive restart and destructive recovery replaces an 
     assert.match(graph.sql("SELECT password_hash FROM Customers").get().password_hash, /^scrypt\$131072\$8\$1\$/);
     await assert.rejects(auth.register({ username: "customer.one", password }, "peer-b"), { status: 409 });
     await assert.rejects(auth.register({ username: "xx", password }, "peer-b"), { status: 400 });
+    await assert.rejects(auth.register({ username: "no-digit", password: "password!" }, "peer-b"), { status: 400 });
+    await assert.rejects(auth.register({ username: "no-special", password: "password1" }, "peer-b"), { status: 400 });
     await assert.rejects(auth.register({ username: "valid-name", password: "short" }, "peer-b"), { status: 400 });
     await assert.rejects(auth.login({ username: "customer.one", password: "incorrect" }, "peer-c"), { status: 401 });
     await assert.rejects(auth.login({ username: "does-not-exist", password }, "peer-c"), { status: 401 });

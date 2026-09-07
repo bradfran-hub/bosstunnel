@@ -5,7 +5,7 @@ const fs = require("node:fs"), os = require("node:os"), path = require("node:pat
 const { MediaGraph } = require("../core/graph");
 const { CustomerAuth } = require("../core/customer-auth");
 const { CustomerOutputLinks } = require("../core/output-links");
-const secret = "output links fixture server key long enough", password = "fixture customer password for private links";
+const secret = "output links fixture server key long enough", password = "fixture customer password 1!";
 async function fixture() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "boss-links-")), file = path.join(dir, "graph.db");
   const f = { dir, file };

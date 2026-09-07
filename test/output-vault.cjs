@@ -5,7 +5,7 @@ const { MediaGraph } = require("../core/graph");
 const { CustomerAuth } = require("../core/customer-auth");
 const { OutputAuth } = require("../core/output-auth");
 const { OutputLibrary } = require("../protocols/library");
-const password = "output owner password for the local fixture";
+const password = "output owner password 1!";
 async function fixture() {
   const graph = new MediaGraph(":memory:", { secret: "output vault fixture server secret long enough" });
   const auth = new CustomerAuth(graph), account = await auth.register({ username: "output-owner", password }, "fixture");

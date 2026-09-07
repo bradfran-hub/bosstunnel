@@ -11,8 +11,9 @@ function ownerId(value) {
   if (typeof value !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(value)) throw fail("Invalid vault owner");
   return value;
 }
-function passwordBytes(value) {
-  if (typeof value !== "string" || Buffer.byteLength(value) > 512 || [...value].length < 15 || [...value].length > 128) throw fail("Use a password between 15 and 128 characters");
+function passwordBytes(value, enforcePolicy = false) {
+  if (typeof value !== "string" || !value.length || Buffer.byteLength(value) > 512 || [...value].length > 128) throw enforcePolicy ? fail("Use 8-128 characters with at least one number and one special character") : invalid();
+  if (enforcePolicy && ([...value].length < 8 || !/[0-9]/.test(value) || !/[^A-Za-z0-9\s]/.test(value))) throw fail("Use 8-128 characters with at least one number and one special character");
   return Buffer.from(value, "utf8");
 }
 function decode(value, size, maximum = size) {
@@ -114,7 +115,7 @@ class PasswordVaults {
     finally { this.#pending.delete(job); }
   }
   async #wrap(owner, password, key) {
-    const salt = crypto.randomBytes(16), bytes = passwordBytes(password);
+    const salt = crypto.randomBytes(16), bytes = passwordBytes(password, true);
     let wrapping;
     try {
       wrapping = await scrypt(bytes, salt, 32, KDF);

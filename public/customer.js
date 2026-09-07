@@ -65,7 +65,7 @@
     document.querySelector("#customer-recovery-field").hidden = !recovering;
     form.elements.recoveryCode.disabled = !recovering; form.elements.recoveryCode.required = recovering;
     form.elements.password.autocomplete = registering || recovering ? "new-password" : "current-password";
-    form.elements.password.minLength = registering || recovering ? 15 : 1;
+    form.elements.password.minLength = registering || recovering ? 8 : 1;
     document.querySelector("#customer-submit span").textContent = registering ? "Create account" : recovering ? "Reset to empty account" : "Sign in";
     document.querySelector("#customer-recover").hidden = recovering;
     for (const tab of document.querySelectorAll("[data-account-mode]")) tab.setAttribute("aria-selected", String(tab.dataset.accountMode === mode));
