@@ -1,0 +1,19 @@
+# HTTP-context server block for a Cloudflare Tunnel origin.
+# Map your public hostname to http://127.0.0.1:8080 in your own tunnel.
+server {
+    listen 127.0.0.1:8080;
+    server_name your-boss.example;
+    access_log off;
+    error_log /dev/null crit;
+    client_max_body_size 32k;
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_read_timeout 300s;
+    }
+}

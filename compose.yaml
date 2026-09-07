@@ -1,0 +1,31 @@
+services:
+  boss:
+    build: .
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "3000"
+      BASE_PATH: /
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?Set PUBLIC_BASE_URL}
+      BOSS_ADMIN_TOKEN: ${BOSS_ADMIN_TOKEN:?Set BOSS_ADMIN_TOKEN}
+      BOSS_SECRET: ${BOSS_SECRET:?Set BOSS_SECRET}
+      DATA_DIR: /app/data
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - boss-data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /home/node/.pm2:uid=1000,gid=1000
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+volumes:
+  boss-data:

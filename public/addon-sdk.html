@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BossTunnel Addon SDK | Developer Guide</title><link rel="icon" href="/bossmedia/icon.svg"><link rel="stylesheet" href="/bossmedia/sdk/styles.css"></head><body>
+<header><a class="brand" href="/bossmedia/"><img src="/bossmedia/icon.svg" width="32" height="32" alt="">BossTunnel</a><nav><a href="/bossmedia/sdk">App SDK</a><a href="#start">Quickstart</a><a href="#handlers">Handlers</a><a href="/bossmedia/sdk/boss-addon.mjs" download="boss-addon.mjs">Download Addon SDK</a></nav></header>
+<div class="layout"><aside><strong>ADDON AUTHOR SDK</strong><a href="#overview">Architecture</a><a href="#start">Files and deployment</a><a href="#handlers">Handler contract</a><a href="#metadata">Catalogue-only addons</a><a href="#series">Series and identity</a><a href="#security">Security</a><a href="#testing">Test checklist</a><a href="/bossmedia/sdk">Build a Boss app</a></aside><main>
+<section id="overview"><p class="eyebrow">Boss protocol v1 / Node.js reference server</p><h1>BossTunnel Addon SDK</h1><p class="lead">Build an authorized media source once. Boss maps it into the canonical graph and exposes it through native Boss, Xtream and M3U outputs.</p><p>An addon is a hosted HTTP service, not uploaded executable code. Boss fetches a versioned descriptor at <code>/addon.boss</code>, then follows its extensionless catalogue, metadata and playback resource URLs. It never executes an author's JavaScript on the Boss server.</p><div class="notice"><strong>Metadata and playback are separate.</strong> Listing and searching must not generate stream URLs, contact playback resolvers, or start media downloads. Resolve an authorized HTTP resource only in the playback handler.</div><p>The SDK uses Node.js built-ins, with UTF-8 JSON as its HTTP data encoding. The native descriptor filename is <code>addon.boss</code>. The SDK publishes it as a downloadable UTF-8 JSON document with <code>addonUrl</code>, <code>format</code>, <code>version</code>, capabilities and resource URLs. It keeps <code>/addon</code> as a legacy alias. A .boss file is not executable code or a media container; never embed account passwords or permanent playback URLs. Private access links must be handled as secrets. App developers should use the <a href="/bossmedia/sdk">App SDK guide</a>.</p></section>
+<section id="start"><h2>Files and deployment</h2><ul><li><a href="/bossmedia/sdk/boss-addon.mjs" download="boss-addon.mjs">boss-addon.mjs</a>: reference HTTP server and validation.</li><li><a href="/bossmedia/sdk/addon-example.mjs" download="addon-example.mjs">addon-example.mjs</a>: working one-item, authorized-media example.</li><li><a href="/bossmedia/sdk/addon-ecosystem.cjs" download="addon-ecosystem.cjs">addon-ecosystem.cjs</a>: production PM2 configuration.</li></ul><p>Place these files together. Use Node.js 20.12+ or 22. The example binds to <code>0.0.0.0:3000</code>. Its public base URL must match the path your NGINX reverse proxy forwards.</p><pre><code>export BOSS_PUBLIC_URL='https://your-addon.example'
+export BOSS_MEDIA_URL='https://your-authorized-media.example/video.mp4'
+export BOSS_ADDON_TOKEN='replace-with-a-long-random-secret'
+
+npm install --no-save pm2
+./node_modules/.bin/pm2 start addon-ecosystem.cjs
+./node_modules/.bin/pm2 save</code></pre><p>Set up PM2 startup for your Linux service user, terminate HTTPS at NGINX, and proxy to port 3000. Forward Host and X-Forwarded-Proto. Disable proxy buffering for media routes. Behind Cloudflare, do not cache authenticated responses. Keep credentials out of access logs and backups readable only by the service owner.</p><p>The SDK example serves API metadata and playback links. It does not host or transcode the media itself. Configure an authorized media URL. Add <code>https://your-addon.example/addon.boss</code> to Boss using source type <strong>Boss addon</strong>; enter the matching access token when configured.</p></section>
+<section id="handlers"><h2>Handler contract</h2><pre><code>import { createBossAddon } from './boss-addon.mjs';
+
+const server = createBossAddon({
+  id: 'com.example.library',
+  name: 'My library',
+  baseUrl: process.env.BOSS_PUBLIC_URL,
+  token: process.env.BOSS_ADDON_TOKEN,
+  types: ['movie', 'series', 'episode']
+}, {
+  catalogue: async (query, { signal }) =&gt; ({
+    items: await databasePage(query, signal), next: null
+  }),
+  search: async (query, { signal }) =&gt; ({
+    items: await searchMetadata(query.search, query, signal),
+    next: null, nextOffset: null
+  }),
+  media: async ({ id }, { signal }) =&gt; findMetadata(id, signal),
+  playback: async ({ id }, { signal }) =&gt;
+    resolveAuthorizedHttpResources(id, signal)
+});
+server.listen(3000, '0.0.0.0');</code></pre><p>The database and resolver functions above are supplied by the author. The downloadable example runs without those application-specific functions.</p><div class="table"><table><thead><tr><th>Handler</th><th>Input</th><th>Return value</th></tr></thead><tbody><tr><td>catalogue</td><td>type, after, seriesId, limit</td><td>{ items, next }</td></tr><tr><td>search</td><td>search, type, skip, limit</td><td>{ items, next, nextOffset }</td></tr><tr><td>media</td><td>id</td><td>One MediaItem, or null for missing</td></tr><tr><td>playback</td><td>id</td><td>Array of current HTTP resources</td></tr><tr><td>subtitles</td><td>id</td><td>Array of { id, language, url }</td></tr></tbody></table></div><p>Every handler receives an AbortSignal. Respect it in database and HTTP work; the SDK signals cancellation on disconnect or after 15 seconds. Handlers must implement their own bounded concurrency and rate limiting for expensive upstream work. Catalogue pages cannot exceed the requested limit (maximum 200). Catalogue and metadata responses cannot exceed 8 MB. XMLTV guides stream one bounded programme at a time. Empty results return an empty array, not a fabricated item.</p><p>Capabilities are derived from supplied handlers. Optional resources are omitted. An optional guide handler enables EPG for channel addons. An optional catchup handler enables provider archives when channel, metadata and playback support are also present. Timeshift remains unsupported. Do not claim unsupported functionality.</p><pre><code>// MediaItem
+{
+  id: 'movie-123', type: 'movie', title: 'My owned video',
+  year: 2025, genres: ['Documentary'], runtimeSeconds: 3600,
+  identities: { imdb: 'tt1234567', tmdb: '123' },
+  artwork: { poster: 'https://your-addon.example/images/123' }
+}
+
+// Optional guide handler for addons declaring the channel type.
+// Match channelKey to the channel record's channel.epgId.
+async function* guide({}, { signal }) {
+  for await (const row of database.programmes({ signal })) {
+    signal.throwIfAborted();
+    yield { channelKey: row.channelId, title: row.title,
+      description: row.description,
+      startsAt: row.startMilliseconds, endsAt: row.endMilliseconds };
+  }
+}
+// Supply this function as handlers.guide. The SDK exposes /guide as XMLTV.
+// Titles: max 4096 characters; descriptions: max 65536; channel keys: max 256.
+// Timestamps are integer UTC milliseconds; stop must be later than start.
+// Respect cancellation and use bounded database pages, not a full guide array.
+
+// Optional provider archive handler, supplied as handlers.catchup.
+// The media handler must return this channel's positive channel.catchupDays.
+async function catchup({ id, start, end }, { signal }) {
+  return authorizedArchiveProvider.resolve({ id, start, end, signal });
+}
+// Return the same resource array as playback, or [] for an unavailable recording.
+// UTC millisecond intervals: maximum 24 hours and within the channel's window.
+// No live-stream fallback, torrent resources or invented recordings.
+
+// Subtitle resources can declare their own headers and expiry too.
+// { id: 'english', language: 'eng', url: 'https://authorized.example/subtitle',
+//   requiredHeaders: { Authorization: 'Bearer subtitle-specific-token' },
+//   expiresAt: 1900000000000 }
+// Boss keeps these headers behind protected resource links.
+
+// Playback handler result: no torrent or DRM resources.
+[
+  { url: 'https://authorized.example/current-video.mp4',
+    protocol: 'http', codec: 'h264', container: 'mp4',
+    resolution: { width: 1920, height: 1080 },
+    languages: ['en'], expiresAt: 1900000000000,
+    requiredHeaders: { Authorization: 'Bearer media-specific-token' } }
+]</code></pre><p>Only supply verified stream attributes. Expiry is an absolute timestamp in milliseconds. The example timestamp illustrates the field, not a recommended permanent expiry. Return an empty array if no authorized stream is currently available. Do not expose server filesystem paths, unrelated credentials, or non-media sidecar files.</p></section>
+<section id="metadata"><h2>Catalogue-only addons and sources</h2><p>Omit the playback handler to build a metadata-only addon. It can provide recent releases, genres, search and series metadata without promising playback. In a combined Boss library, a separate authorized identity-capable playback source can resolve those titles at play time.</p><p>Users may also add external compatible catalogue descriptors using <strong>Catalogue source</strong>. That mode imports metadata and explicitly disables playback from that source, even if the external provider advertises streams. It is separate from a native Boss addon.</p><p>Persist large catalogues in a database, return bounded pages, use stable cursors, deduplicate reliable external identities and ingest changes incrementally. Do not keep an entire large catalogue in a JavaScript array or replace one placeholder's title and ID whenever a user searches.</p><p>Required preset filters in compatible external catalogues are expanded into bounded feeds. Genre-filtered titles retain genre categories, and overlapping reliable identities deduplicate. Other-source adapters allow 64 preset values and combinations per catalogue; catalogue-only sources allow 256. Both are bounded to 256 feeds per source. Catalogue-only sources omit feeds needing required filters without preset values; other-source adapters reject them. Boss does not guess personalized filter values. Search-required feeds remain search-only. Adding a catalogue still does not guarantee a playable recording.</p><p>Displayed metadata comes from active sources in the connected library, ordered by source priority and then source ID. Genres combine those sources' current values, without case-only duplicates, up to 100 values. Unselected sources do not supply descriptive fields to the player. Canonical identities remain shared. Local text search indexes each source's current title and original title, restricted to active mappings in the connected library. Results retain the library's preferred display title even when another selected source's title matched. Renamed titles replace old index entries; historical aliases are not retained automatically.</p></section>
+<section id="series"><h2>Series, episodes and stable identity</h2><p>Source IDs must remain stable across requests, refreshes and restarts. Supply IMDb, TMDB and TVDB identities only when reliable. Boss creates its own canonical UUIDs and persistent Xtream IDs; an author's local ID is a source identity, not a Boss database ID.</p><p>Declare <code>series</code> and <code>episode</code> types for television. Return series in the normal series catalogue. For <code>catalogue({ type: 'episode', seriesId })</code>, return that series' episodes with stable IDs, source <code>seriesId</code>, integer <code>seasonNumber</code> and <code>episodeNumber</code>. Boss retains the hierarchy and indexes episodes without resolving streams.</p><p>The same media graph is used by all output adapters. Boss-aware apps can use equivalent extended search through native Boss, Xtream or M3U discovery. Legacy players still have their protocol's limitations. See <a href="/bossmedia/sdk#native">the app integration contract</a>.</p></section>
+<section id="security"><h2>Security and authorization</h2><ul><li>Serve only sources the user is authorized to access. Respect authentication, subscriptions, licenses and DRM restrictions.</li><li>Use a long random addon token for private services. The SDK expects <code>Authorization: Bearer token</code>. Never ask an addon user for the Boss management token.</li><li>Use HTTPS. Keep source API resources on the configured origin. Boss forwards the source token only to that origin, not to another media host.</li><li>Never return magnets, torrent payloads, torrent engines, torrent uploads or DRM bypass mechanisms. Already-resolved authorized HTTP media is permitted.</li><li>The SDK validates resource URLs and rejects obvious prohibited fields. Authors remain responsible for validating redirects, response bodies, authorization and the actual media served.</li><li>Do not execute remote code or accept arbitrary filesystem paths. Treat addon inputs and upstream metadata as untrusted.</li></ul></section>
+<section id="categories"><h2>Category handlers</h2><p>Add the optional <code>categories({ type, after, limit }, { signal })</code> handler alongside catalogue. Return <code>{ categories: [{ id: 'comedy', name: 'Comedy', type: 'movie' }], next: null }</code>. Use stable IDs, a nullable advancing cursor and at most the requested 1 to 200 records. The SDK advertises the category capability and resource only when both category and catalogue handlers exist.</p><p>Category IDs are opaque source identifiers up to 256 characters; names are nonempty strings up to 1024 characters. Category types are movie, series, channel and event. The SDK rejects invalid records, repeated IDs within a page and non-advancing cursors.</p><p>Your catalogue and search handlers receive optional <code>categoryId</code>. Apply it using authorized source membership and include the selected category object as <code>item.category</code>. Unfiltered items may include their primary category. Never resolve playback to enumerate categories. See the <a href="/bossmedia/sdk#categories">app category contract</a>. Source ingestion and player navigation must also preserve these fields; an advertised endpoint alone does not establish category parity through every downstream adapter.</p></section>
+<section id="player-limits"><h2>Player capability metadata</h2><p>Supply verified codec, resolution and HDR attributes on playback resources so the Boss gateway can filter them against player and library limits. Missing data is unknown; never invent metadata to pass a filter. Strict codec requests reject resources without codec metadata.</p><p>The gateway exposes an optional <code>playbackCapabilities</code> extension to apps, described in the <a href="/bossmedia/sdk#player-capabilities">player SDK guide</a>. It preserves player limits through native, Xtream and M3U-discovered playback. This author SDK does not advertise that extension automatically: a standalone author-hosted addon must implement its full validation and enforcement before claiming it. The extension is not a promise of universal format compatibility or permission to transcode.</p></section>
+<section id="testing"><h2>Author acceptance checklist</h2><ol><li>Fetch <code>/addon.boss</code> with correct and incorrect credentials; verify capability accuracy.</li><li>List and search multiple pages without any playback handler calls.</li><li>Restart the addon and verify IDs and cursor behavior remain stable.</li><li>Ingest it through Boss source type Boss addon; verify movies, series and episodes in native, Xtream and M3U outputs.</li><li>Merge it with another source and verify deduplication through reliable identities.</li><li>Play real video, verify subtitles and expiry, and ensure text documents or invalid candidates are rejected.</li><li>Test disconnect cancellation, missing media, source failure, changed credentials and revoked access.</li><li>For apps, test all three SDK discovery modes against the same library and compare canonical IDs and search results.</li></ol><p>Passing a metadata fixture is not player certification. Authors and app teams must test real media, seeking and supported platforms.</p></section><footer>BossTunnel / Addon SDK v1 <a href="/bossmedia/sdk">App developer guide</a></footer></main></div></body></html>
