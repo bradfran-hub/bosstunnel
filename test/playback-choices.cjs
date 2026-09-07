@@ -48,7 +48,7 @@ test("BOSS lists all providers and same-provider variants without catalogue-time
     assert.equal(choices.filter(choice => choice.source.protocol === "addon").length, 10);
     assert.ok(choices.every(choice => ["2160p", "WEB-DL", "HEVC", "HDR10", "EAC3", "en"].every(tag => choice.tags.includes(tag))));
     assert.doesNotMatch(JSON.stringify(result), /private-fixture|owned\.example|Authorization|infoHash/);
-    assert.ok(tickets.every(ticket => ticket.expires <= Date.now() + 300000));
+    assert.ok(tickets.every(ticket => ticket.expires <= Date.now() + 86400000));
     assert.equal(calls, 6);
     await output.playback(media.canonicalId);
     assert.equal(calls, 6, "source mappings use independent cached results");

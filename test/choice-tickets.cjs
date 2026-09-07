@@ -53,7 +53,8 @@ test("selected playback tickets hide secrets, preserve bytes, and enforce expiry
     const playlist = await (await fetch(hls.url)).text();
     const child = playlist.split("\n").find(line => line.startsWith(base));
     const childTicket = graph.secrets.open(Buffer.from(child.split("/").at(-1), "base64url").toString());
-    assert.ok(childTicket.expires > hls.expiresAt + 300000, "HLS session is not truncated by selection expiry");
+    assert.equal(childTicket.expires, hls.expiresAt, "HLS children retain the playback window");
+    assert.ok(childTicket.expires > Date.now() + 7200000, "unknown upstream expiry does not impose a short movie/seek timeout");
     const ticket = graph.secrets.open(Buffer.from(chosen.url.split("/").at(-1), "base64url").toString());
     const expired = chosen.url.slice(0, chosen.url.lastIndexOf("/") + 1) + Buffer.from(graph.secrets.seal({ ...ticket, expires: Date.now() - 1 })).toString("base64url");
     assert.equal((await fetch(expired)).status, 403);

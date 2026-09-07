@@ -50,7 +50,7 @@ function createBossOutput(library, root) {
       const resources = result.candidates.map((candidate, index) => {
         const source = library.graph.source(candidate.sourceId);
         const tags = require("../core/stream-details").qualityTags(candidate);
-        const expiresAt = Math.min(Date.now() + 300000, candidate.expiresAt ? candidate.expiresAt - 1000 : Infinity);
+        const expiresAt = Math.min(Date.now() + 86400000, candidate.expiresAt ? candidate.expiresAt - 1000 : Infinity);
         return {
           id: `choice-${index + 1}`, mode: "selected", name: source.name, title: [source.name, ...tags].join(" | "),
           source: { id: source.id, name: source.name, protocol: source.protocol },

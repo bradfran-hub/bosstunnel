@@ -141,7 +141,7 @@ function library(id) {
   const root = `${PUBLIC}/a/${id}`;
   return new OutputLibrary(engine, collection, {
     play: (media) => `${root}/play/${media.canonicalId}`,
-    choice: (media, candidate, expires) => ticket(id, candidate.sourceId, { url: candidate.resource.url, headers: candidate.requiredHeaders }, expires, { mediaId: media.canonicalId, protocol: candidate.protocol, expires: candidate.expiresAt || Date.now() + 3600000 }),
+    choice: (media, candidate, expires) => ticket(id, candidate.sourceId, { url: candidate.resource.url, headers: candidate.requiredHeaders }, expires, { mediaId: media.canonicalId, protocol: candidate.protocol, expires: candidate.expiresAt || expires }),
     artwork: (media, kind) => `${root}/artwork/${media.canonicalId}/${kind}`,
     resource: (resource, sourceId) => ticket(id, sourceId, resource), epg: `${root}/xmltv.xml`, boss: `${root}/addon.boss`
   });
