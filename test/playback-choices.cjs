@@ -41,6 +41,7 @@ test("BOSS lists all providers and same-provider variants without catalogue-time
     const choices = result.resources.filter(resource => resource.mode === "selected");
     assert.ok(result.resources.every(resource => resource.mode === "selected"), "header-only sources require native direct playback");
     assert.equal(choices.length, 15);
+    assert.ok(choices.every(choice => choice.resolution.width === 3840 && choice.resolution.height === 2160));
     assert.deepEqual(new Set(choices.map(choice => choice.source.protocol)), new Set(protocols));
     assert.equal(choices.filter(choice => choice.source.protocol === "xtream").length, 2);
     assert.equal(choices.filter(choice => choice.source.protocol === "addon").length, 10);
@@ -62,6 +63,8 @@ test("BOSS lists all providers and same-provider variants without catalogue-time
 test("quality extraction is optional, credential-free and survives normalization", () => {
   const candidate = normalizeCandidate({ url: "https://owned.example/media.mp4", name: "4K", title: "WEB-DL x265 Dolby Vision", audio: [null, { codec: "aac" }] }, "test");
   assert.equal(candidate.resolution.height, 2160);
+  assert.equal(candidate.resolution.width, 3840);
+  assert.equal(candidate.resolution.inferred, true);
   assert.equal(candidate.codec, "hevc");
   assert.equal(candidate.hdr, "Dolby Vision");
   assert.deepEqual(normalizeCandidate(candidate, "test"), candidate);
@@ -69,6 +72,20 @@ test("quality extraction is optional, credential-free and survives normalization
   assert.equal(unknown.quality, null);
   assert.equal(unknown.resolution, null);
   assert.equal(normalizeCandidate({ url: "https://owned.example/media.mp4", expiresAt: Date.now() - 1000 }, "test"), null);
+});
+
+test("resolution pairs preserve explicit dimensions and never emit partial objects", () => {
+  const { streamDetails, completeResolution } = require("../core/stream-details");
+  for (const [height, width] of [[720, 1280], [1080, 1920], [1440, 2560], [2160, 3840], [4320, 7680]]) {
+    assert.deepEqual(streamDetails({ name: `${height}p` }).resolution, { width, height, inferred: true });
+    assert.deepEqual(completeResolution({ height }), { width, height, inferred: true }, "old cached height-only candidates are repaired at serialization");
+  }
+  assert.deepEqual(streamDetails({ title: "Movie 1920x800", name: "1080p" }).resolution, { width: 1920, height: 800 });
+  assert.deepEqual(streamDetails({ name: "4K", resolution: { width: 1920, height: 804 } }).resolution, { width: 1920, height: 804 });
+  assert.equal(completeResolution({ width: 1920 }), null);
+  assert.equal(completeResolution({ height: 480 }), null, "ambiguous SD aspect ratios are not invented");
+  assert.equal(completeResolution({ width: true, height: false }), null);
+  assert.equal(completeResolution("on-request"), null);
 });
 
 test("resolver retains more than 200 choices and identical resources from distinct providers", async () => {

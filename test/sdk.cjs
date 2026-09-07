@@ -3,6 +3,31 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const http = require("node:http");
 
+test("addon SDK requires complete numeric resolution pairs without fetching media", async () => {
+  const { createBossAddon } = await import("../public/boss-addon.mjs");
+  let resolution = { height: 1080 }, handler;
+  const server = http.createServer((req, res) => handler.emit("request", req, res));
+  await new Promise(resolve => server.listen(0, "0.0.0.0", resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  handler = createBossAddon({ id: "test.dimensions", name: "Fixture", baseUrl, types: ["movie"] }, {
+    playback: () => [{ url: "https://media.example.invalid/unchanged.mp4", resolution }]
+  });
+  try {
+    for (const invalid of [{ height: 1080 }, { width: 1920 }, "on-request", { width: 0, height: 1080 }]) {
+      resolution = invalid;
+      assert.equal((await fetch(`${baseUrl}/playback/fixture`)).status, 422);
+    }
+    for (const valid of [{ width: 1920, height: 1080 }, { width: 3840, height: 2160, inferred: true }, null]) {
+      resolution = valid;
+      const response = await fetch(`${baseUrl}/playback/fixture`);
+      assert.equal(response.status, 200);
+      const resource = (await response.json()).resources[0];
+      assert.deepEqual(resource.resolution, valid);
+      assert.equal(resource.url, "https://media.example.invalid/unchanged.mp4");
+    }
+  } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+});
+
 test("SDK separates trusted API endpoints from mixed HTTP/HTTPS direct media choices", async () => {
   const { BossClient, playbackRequest } = await import("../public/boss-client.mjs");
   const requests = [];

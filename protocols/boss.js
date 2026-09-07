@@ -49,7 +49,7 @@ function createBossOutput(library, root) {
       for (const [key, value] of Object.entries(capabilityQuery(params, library.collection.profile))) url.searchParams.set(key, value);
       const result = await library.playbackChoices(media, require("../core/player-capabilities").parseCapabilities(params));
       const automatic = result.resources.some(resource => !Object.keys(resource.requiredHeaders).length)
-        ? [{ id: "automatic", mode: "automatic", name: "Automatic", title: "Automatic", url: url.href, delivery: "redirect", requiredHeaders: {}, transport: "http", resolution: "on-request", tags: [] }] : [];
+        ? [{ id: "automatic", mode: "automatic", name: "Automatic", title: "Automatic", url: url.href, delivery: "redirect", requiredHeaders: {}, transport: "http", resolution: null, resolutionState: "on-request", tags: [] }] : [];
       return { id: media.canonicalId, ...result, resources: [...automatic, ...result.resources] };
     },
     async catchup(id, params) {

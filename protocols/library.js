@@ -75,7 +75,7 @@ class OutputLibrary {
   }
   async playbackChoices(media, context = {}) {
     const result = await this.resolve(media, { output: "http", protocols: ["http", "hls"], ...context });
-    const { qualityTags, qualityLabel } = require("../core/stream-details");
+    const { qualityTags, qualityLabel, completeResolution } = require("../core/stream-details");
     const { directResource } = require("../playback");
     const resources = result.candidates.map((candidate, index) => {
       const source = this.graph.source(candidate.sourceId);
@@ -85,7 +85,7 @@ class OutputLibrary {
         title: [...new Set([label, ...tags])].join(" | "),
         source: { id: source.id, name: source.name, protocol: source.protocol },
         ...directResource({ url: candidate.resource.url, headers: candidate.requiredHeaders }),
-        transport: candidate.protocol, quality: candidate.quality, resolution: candidate.resolution,
+        transport: candidate.protocol, quality: candidate.quality, resolution: completeResolution(candidate.resolution),
         codec: candidate.codec, container: candidate.container, hdr: candidate.hdr,
         audio: candidate.audio, languages: candidate.languages, tags,
         expiresAt: candidate.expiresAt || null

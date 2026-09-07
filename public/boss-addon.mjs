@@ -122,6 +122,7 @@ export function createBossAddon(config, handlers) {
       const field = match[1] === 'subtitles' ? 'subtitles' : 'resources';
       if (!Array.isArray(result) || result.length > 200 || result.some((item) => !item || !httpResource(item.url) || ['infoHash', 'info_hash', 'magnet', 'torrent', 'torrentUrl', 'sources', 'fileIdx', 'drm', 'requiresDrm'].some((key) => item[key] != null))) throw bad('Only authorized non-DRM HTTP resources are supported', 422);
       if (result.some(item => item.requiredHeaders != null && (typeof item.requiredHeaders !== 'object' || Array.isArray(item.requiredHeaders) || Object.entries(item.requiredHeaders).some(([key, value]) => !/^[a-z0-9-]{1,80}$/i.test(key) || typeof value !== 'string' || /[\r\n\0]/.test(value))))) throw bad('Invalid resource headers', 422);
+      if (field === 'resources' && result.some(item => item.resolution != null && (!['width', 'height'].every(key => Number.isInteger(item.resolution[key]) && item.resolution[key] > 0 && item.resolution[key] <= 16384)))) throw bad('Resolution requires both positive integer width and height; omit it when unknown', 422);
       return send(res, 200, { id, [field]: result.map(item => ({ ...item, delivery: 'direct', requiredHeaders: item.requiredHeaders || {}, headerOrigin: new URL(item.url).origin })) }, req.method === 'HEAD');
     })().catch((error) => {
       if (res.headersSent) res.destroy();

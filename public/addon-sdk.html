@@ -73,6 +73,9 @@ async function catchup({ id, start, end }, { signal }) {
 [
   { url: 'https://authorized.example/current-video.mp4',
     protocol: 'http', codec: 'h264', container: 'mp4',
+    // Both dimensions are required when known; otherwise omit resolution.
+    // Nominal quality-tier dimensions must include inferred: true.
+    // Never use a height-only object or a status string here.
     resolution: { width: 1920, height: 1080 },
     languages: ['en'], expiresAt: 1900000000000,
     requiredHeaders: { Authorization: 'Bearer media-specific-token' } }
